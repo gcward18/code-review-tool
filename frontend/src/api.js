@@ -21,6 +21,10 @@ export const api = {
     token = data.token;
     return data;
   },
+  chat: (id) => call(`/api/projects/${id}/chat`),
+  ask: (id, message) =>
+    call(`/api/projects/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }),
+  clearChat: (id) => call(`/api/projects/${id}/chat/clear`, { method: "POST", body: "{}" }),
   workspaces: () => call("/api/workspaces"),
   tree: (path) => call(`/api/tree?${q(path ? { path } : {})}`),
   repo: (path) => call(`/api/repo?${q({ path })}`),

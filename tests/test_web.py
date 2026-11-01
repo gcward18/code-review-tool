@@ -35,7 +35,7 @@ class WebTests(unittest.TestCase):
 
     def scripted(self):
         return ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],
-                              "aggregator": [verdict()]})
+                              "aggregator": [verdict()], "chat": [{"answer": "One finding."}]})
 
     def get(self, route, **query):
         url = self.url + route + ("?" + urllib.parse.urlencode(query) if query else "")
@@ -143,6 +143,17 @@ class WebTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as again:  # already decided
             self.post(f"/api/reviews/{review_id}/approve", {"files": []})
         self.assertEqual(self.status(again), 409)
+
+    def test_project_chat_round_trip(self):
+        project = self.store.project(self.repo, "calculator")
+        with patch("autosde.web.scanner", return_value=clean_scan):
+            reply = self.post(f"/api/projects/{project}/chat", {"message": "Summarize"})
+        self.assertEqual(reply["messages"][-1]["content"], "One finding.")
+        self.assertEqual(len(self.get(f"/api/projects/{project}/chat")["messages"]), 2)
+        self.assertEqual(self.post(f"/api/projects/{project}/chat/clear", {})["messages"], [])
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.post(f"/api/projects/{project}/chat", {"message": "x"}, token="wrong")
+        self.assertEqual(self.status(error), 403)
 
     def test_cancel_and_expiry(self):
         base = git(self.repo, "rev-parse", "HEAD~1")

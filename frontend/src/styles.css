@@ -143,3 +143,9 @@ pre.fix .hunk { color: var(--muted); }
 .node.blocked { cursor: default; opacity: .6; }
 .hint { margin: 4px 8px; }
 .setting { margin: 12px 0; max-width: 320px; }
+.messages { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow: auto; margin-bottom: 10px; }
+.msg { padding: 8px 12px; border-radius: 10px; max-width: 85%; }
+.msg.user { align-self: flex-end; background: var(--select); }
+.msg.assistant { align-self: flex-start; background: var(--hover); }
+.msg .said { margin: 0 0 4px; white-space: pre-wrap; }
+.chat form textarea { width: auto; }

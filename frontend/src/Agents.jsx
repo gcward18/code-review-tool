@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
 
-const CORE = ["coordinator", "aggregator"];
+const CORE = ["coordinator", "aggregator", "chat"];
 const FIXED = [...CORE, "general"];
 const PROMPTS = [
   ["coordinator", "Coordinator", "Plans which specialist reviews which file and flags low-value files."],
   ["specialist", "Specialist", "Shared by every specialist. Keep {agent} and {focus}."],
   ["aggregator", "Aggregator", "Removes duplicates and weak findings."],
+  ["chat", "Chat", "Answers questions about a project's review history."],
 ];
 
 const clone = (value) => JSON.parse(JSON.stringify(value));

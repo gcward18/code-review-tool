@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import Agents from "./Agents.jsx";
 
@@ -382,8 +382,8 @@ function Review({ id, onProject, onContext }) {
         </details>
       )}
       {review.agent_runs.length > 0 && (
-        <div className="card">
-          <h3>Agents</h3>
+        <details className="card">
+          <summary>Agents ({review.agent_runs.length})</summary>
           <table>
             <thead>
               <tr><th>Role</th><th>Agent</th><th>Model</th><th>Status</th><th>Files</th><th>Time</th><th>Tokens</th></tr>
@@ -402,7 +402,7 @@ function Review({ id, onProject, onContext }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </details>
       )}
       {review.limitations && (
         <details className="card">
@@ -496,6 +496,81 @@ function Fix({ text }) {
   );
 }
 
+// Answers: plain text with ``` fenced blocks shown as code.
+function Message({ text }) {
+  return text.split(/```[a-z]*\n?/).map((part, i) =>
+    i % 2 ? <pre key={i} className="fix">{part.replace(/\n$/, "")}</pre>
+      : <p key={i} className="said">{part.trim()}</p>);
+}
+
+function Chat({ projectId }) {
+  const [messages, setMessages] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const end = useRef(null);
+  useEffect(() => {
+    api.chat(projectId).then((d) => setMessages(d.messages)).catch((e) => setError(e.message));
+  }, [projectId]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" });
+  }, [messages, busy]);
+
+  const send = async (e) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    setError("");
+    setMessages((m) => [...(m || []), { role: "user", content: text, pending: true }]);
+    setDraft("");
+    try {
+      setMessages((await api.ask(projectId, text)).messages);
+    } catch (err) {
+      setError(err.message);
+      setMessages((m) => m.filter((x) => !x.pending));
+      setDraft(text);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card chat">
+      <div className="actions title">
+        <h3 className="grow">Chat about this project's history</h3>
+        {messages?.length > 0 && (
+          <button className="secondary" onClick={() => api.clearChat(projectId).then((d) => setMessages(d.messages))}>
+            Clear
+          </button>
+        )}
+      </div>
+      <div className="messages">
+        {messages?.length === 0 && (
+          <p className="muted small">Ask about past reviews, e.g. "Which files keep getting findings?" or "What did review #10 find?"</p>
+        )}
+        {messages?.map((m, i) => (
+          <div key={i} className={`msg ${m.role}`}>
+            <Message text={m.content} />
+            {m.role === "assistant" && (
+              <span className="muted small">{m.model} · {m.input_tokens}/{m.output_tokens} tokens</span>
+            )}
+          </div>
+        ))}
+        {busy && <div className="msg assistant muted">Thinking…</div>}
+        <div ref={end} />
+      </div>
+      {error && <p className="error small">{error}</p>}
+      <form className="actions" onSubmit={send}>
+        <textarea className="grow" rows={2} value={draft} placeholder="Ask the chat agent…"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send(e)} />
+        <button type="submit" disabled={busy || !draft.trim()}>Send</button>
+      </form>
+    </div>
+  );
+}
+
 function Project({ id, onOpen, onReview, onContext }) {
   const [project, setProject] = useState(null);
   useEffect(() => {
@@ -511,6 +586,7 @@ function Project({ id, onOpen, onReview, onContext }) {
         </div>
         <code className="muted small">{project.path}</code>
       </div>
+      <Chat projectId={project.id} />
       <div className="card">
         <h3>Reviews</h3>
         <ReviewTable reviews={project.reviews} onOpen={onOpen} />

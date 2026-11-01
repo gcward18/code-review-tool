@@ -15,9 +15,10 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from autosde import agents, git, report
+from autosde import agents, chat, git, report
 from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, approve, cancel, prepare
+from autosde.scan import ScanUnavailable, scanner
 
 STATIC = Path(__file__).parent / "static"
 # Never listed or searched: system data and dependency folders.
@@ -296,6 +297,24 @@ class App:
                 "agents": self.store.agents(project["id"])}
 
 
+    def _project_or_404(self, project_id):
+        project = self.store.find_project(project_id)
+        if project is None:
+            raise ApiError(404, "No such project.")
+        return project
+
+    def chat(self, project_id, body):
+        project = self._project_or_404(project_id)
+        try:
+            scan = scanner(self.settings.gitleaks)
+            return {"messages": chat.ask(self.store, self.model_factory(), project,
+                                         body.get("message"), scan=scan)}
+        except (chat.ChatError, ScanUnavailable) as error:
+            raise ApiError(400, str(error)) from None
+        except RuntimeError:
+            raise ApiError(503, "The model is not configured (OpenAI key missing).") from None
+
+
 def handler_for(app):
     class Handler(BaseHTTPRequestHandler):
         server_version = "AutoSDE"
@@ -366,6 +385,9 @@ def handler_for(app):
                     return self._json(200, app.store.projects())
                 if path == "/api/reviews":
                     return self._json(200, app.store.reviews(limit=50))
+                if m := re.fullmatch(r"/api/projects/(\d+)/chat", path):
+                    project = app._project_or_404(int(m[1]))
+                    return self._json(200, {"messages": app.store.chat(project["id"])})
                 if m := re.fullmatch(r"/api/projects/(\d+)", path):
                     return self._json(200, app.project(int(m[1])))
                 if m := re.fullmatch(r"/api/reviews/(\d+)\.sarif", path):
@@ -398,6 +420,11 @@ def handler_for(app):
             try:
                 if self.path == "/api/reviews":
                     return self._json(202, app.submit(body))
+                if m := re.fullmatch(r"/api/projects/(\d+)/chat", self.path):
+                    return self._json(200, app.chat(int(m[1]), body))
+                if m := re.fullmatch(r"/api/projects/(\d+)/chat/clear", self.path):
+                    app.store.clear_chat(app._project_or_404(int(m[1]))["id"])
+                    return self._json(200, {"messages": []})
                 if self.path == "/api/agents":
                     try:
                         return self._json(200, agents.update(body))

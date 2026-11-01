@@ -21,14 +21,17 @@ SPECIALISTS = {
     "csharp": [".cs"],
     "general": [],  # catch-all for every other file; cannot be disabled
 }
-ROLES = ("coordinator", *SPECIALISTS, "aggregator")
+ROLES = ("coordinator", *SPECIALISTS, "aggregator", "chat")
 SYSTEM_PROMPTS = {"coordinator": "coordinator.md", "aggregator": "aggregator.md",
-                  "specialist": "specialist.md"}
+                  "specialist": "specialist.md", "chat": "chat.md"}
 _EXT = re.compile(r"\.[A-Za-z0-9_+-]{1,16}")
 _MODEL = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 LANGSMITH_ENDPOINTS = ("https://api.smith.langchain.com", "https://eu.api.smith.langchain.com")
 _PROJECT = re.compile(r"[A-Za-z0-9 ._:-]{1,100}")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
+
+
+CORE = ("coordinator", "aggregator", "chat")  # not file specialists
 
 
 class ConfigError(ValueError):
@@ -40,6 +43,7 @@ def defaults():
               for name, ext in SPECIALISTS.items()}
     agents["coordinator"] = {"enabled": True, "model": None}
     agents["aggregator"] = {"enabled": True, "model": None}
+    agents["chat"] = {"enabled": True, "model": None}  # answers questions on project history
     for item in agents.values():
         item["trace"] = True
     return {"agents": agents, "langsmith": {"enabled": False, "project": "autosde",
@@ -69,7 +73,7 @@ def validate(config):
             if model is not None and (not isinstance(model, str) or not _MODEL.fullmatch(model)):
                 raise ConfigError(f"{name}: invalid model id.")
             entry["model"] = model
-        if "extensions" in item and name not in ("coordinator", "aggregator"):
+        if "extensions" in item and name not in CORE:
             extensions = item["extensions"]
             if not isinstance(extensions, list) or len(extensions) > 50:
                 raise ConfigError(f"{name}: extensions must be a list.")
@@ -101,7 +105,7 @@ def validate(config):
             if ext in seen and seen[ext] != name:
                 raise ConfigError(f"{ext} is claimed by both {seen[ext]} and {name}.")
             seen[ext] = name
-    for fixed in ("general", "coordinator", "aggregator"):
+    for fixed in ("general", *CORE):
         clean["agents"][fixed]["enabled"] = True  # the team cannot run without these
     return clean
 
@@ -124,7 +128,7 @@ def save_config(config, path=None):
 def specialists(config):
     """Enabled specialists in order, with their extensions."""
     return {name: item.get("extensions", []) for name, item in config["agents"].items()
-            if name not in ("coordinator", "aggregator") and item.get("enabled")}
+            if name not in CORE and item.get("enabled")}
 
 
 def prompt_file(kind, agent=None):
@@ -163,7 +167,7 @@ def snapshot():
         "langsmith_key": bool(os.environ.get("LANGSMITH_API_KEY")),
         "prompts": {kind: read_prompt(kind) for kind in SYSTEM_PROMPTS},
         "focus": {name: read_prompt("focus", name) for name in config["agents"]
-                  if name not in ("coordinator", "aggregator")},
+                  if name not in CORE},
     }
 
 

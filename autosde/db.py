@@ -71,6 +71,17 @@ CREATE TABLE IF NOT EXISTS review_files (
     skipped TEXT,                   -- why it could not be sent (binary, size, secret)
     included INTEGER                -- NULL until approved; 1 reviewed, 0 not approved
 );
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,             -- user | assistant
+    content TEXT NOT NULL,
+    model TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_project ON chat_messages(project_id, id);
 CREATE INDEX IF NOT EXISTS files_review ON review_files(review_id);
 CREATE INDEX IF NOT EXISTS reviews_project ON reviews(project_id, started_at);
 CREATE INDEX IF NOT EXISTS runs_review ON agent_runs(review_id);
@@ -216,6 +227,32 @@ class Store:
             " FROM projects p LEFT JOIN reviews r ON r.project_id = p.id"
             " GROUP BY p.id ORDER BY last_review DESC NULLS LAST, p.name"
         )
+
+    def history(self, project_id, *, limit=30):
+        """Reviews with kept and rejected findings, newest first: what the chat agent knows."""
+        reviews = self._all(
+            "SELECT id, range_spec, status, summary, limitations, started_at FROM reviews"
+            " WHERE project_id = ? ORDER BY started_at DESC LIMIT ?", project_id, limit)
+        for review in reviews:
+            review["findings"] = self._all(
+                "SELECT file, start_line, end_line, severity, category, title, description,"
+                " recommendation, kept, rejection, agent FROM findings WHERE review_id = ?"
+                " ORDER BY kept DESC, id", review["id"])
+        return reviews
+
+    def chat(self, project_id):
+        return self._all("SELECT role, content, model, input_tokens, output_tokens, created_at"
+                         " FROM chat_messages WHERE project_id = ? ORDER BY id", project_id)
+
+    def add_chat(self, project_id, role, content, *, model=None, input_tokens=0,
+                 output_tokens=0):
+        self.db.execute(
+            "INSERT INTO chat_messages(project_id, role, content, model, input_tokens,"
+            " output_tokens, created_at) VALUES (?,?,?,?,?,?,?)",
+            (project_id, role, content, model, input_tokens, output_tokens, time.time()))
+
+    def clear_chat(self, project_id):
+        self.db.execute("DELETE FROM chat_messages WHERE project_id = ?", (project_id,))
 
     def find_project(self, ref):
         """A project by numeric id, exact name or path."""

@@ -86,42 +86,56 @@ class App:
             return False
 
     def repositories(self):
-        """Git repositories under the browse root, found by a bounded walk, cached briefly."""
+        """(repositories, blocked folders) under the browse root, from a bounded walk.
+
+        Blocked folders are ones macOS has not approved for this app. Cached briefly.
+        """
         if self._repos and time.monotonic() - self._repos[0] < 60:
             return self._repos[1]
-        found, deadline = [], time.monotonic() + 5
+        found, blocked, deadline = [], [], time.monotonic() + 5
         stack = [(self.browse_root, 0)]
         while stack and time.monotonic() < deadline and len(found) < 1000:
             folder, depth = stack.pop()
             try:
                 with os.scandir(folder) as entries:
                     children = [e for e in entries if e.is_dir(follow_symlinks=False)]
+            except PermissionError:
+                blocked.append(str(folder))
+                continue
             except OSError:
-                continue  # not approved or unreadable
+                continue
             if any(e.name == ".git" for e in children):
                 found.append(str(folder))
                 continue
             if depth < 5:
                 stack += [(Path(e.path), depth + 1) for e in children
                           if not e.name.startswith(".") and e.name not in SKIP]
-        self._repos = (time.monotonic(), sorted(found, key=str.lower))
-        return self._repos[1]
+        result = (sorted(found, key=str.lower), sorted(blocked, key=str.lower))
+        self._repos = (time.monotonic(), result)
+        return result
 
-    def search(self, query):
-        """Repositories and reviewed projects whose name or path contains the query."""
-        query = (query or "").strip().lower()
-        known = {p["path"]: p for p in self.store.projects()}
-        paths = dict.fromkeys(self.repositories())
-        for path in known:
-            if self._inside(path) is not None:
-                paths.setdefault(path)
-        results = [
-            {"name": Path(path).name, "path": path, "project_id": known.get(path, {}).get("id")}
-            for path in paths
-            if not query or query in Path(path).name.lower() or query in path.lower()
-        ]
-        results.sort(key=lambda r: (r["project_id"] is None, r["name"].lower()))
-        return {"results": results[:100]}
+    def workspaces(self):
+        """Recent (reviewed) projects, other available repositories, and blocked folders."""
+        found, blocked = self.repositories()
+        recent, seen = [], set()
+        for p in self.store.projects():
+            if self._inside(p["path"]) is None:
+                continue
+            entry = {"name": p["name"], "path": p["path"], "project_id": p["id"],
+                     "reviews": p["reviews"], "last_review": p["last_review"]}
+            seen.add(str(Path(p["path"]).resolve()))
+            if self._readable(p["path"]):
+                recent.append(entry)
+            else:
+                blocked.append(p["path"])
+        available = [{"name": Path(path).name, "path": path} for path in found if path not in seen]
+        available.sort(key=lambda r: r["name"].lower())
+        return {
+            "recent": recent,
+            "available": available,
+            "blocked": [{"name": Path(path).name, "path": path}
+                        for path in sorted(set(blocked), key=str.lower)],
+        }
 
     def tree(self, raw):
         path = self._inside(raw)
@@ -336,8 +350,8 @@ def handler_for(app):
                 if path == "/api/session":
                     return self._json(200, {"token": app.token, "model": app.settings.model,
                                             "root": str(app.browse_root)})
-                if path == "/api/search":
-                    return self._json(200, app.search(query.get("q")))
+                if path == "/api/workspaces":
+                    return self._json(200, app.workspaces())
                 if path == "/api/tree":
                     return self._json(200, app.tree(query.get("path")))
                 if path == "/api/repo":

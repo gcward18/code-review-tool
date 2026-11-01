@@ -74,21 +74,25 @@ class WebTests(unittest.TestCase):
                 self.get("/api/tree", path=outside)
             self.assertEqual(self.status(error), 400)
 
-    def test_search_finds_repositories_and_skips_unreadable_folders(self):
+    def test_workspaces_split_recent_available_and_blocked(self):
         nested = Path(self.tmp.name) / "work" / "api"
         nested.mkdir(parents=True)
         git(nested, "init", "-q")
         locked = Path(self.tmp.name) / "locked"
         locked.mkdir()
+        project = self.store.project(self.repo, "calculator")
+        self.store.start_review(project, type("C", (), {"range_spec": "a..b", "base": "a",
+                                                         "head": "b", "files": []})(), "m")
         locked.chmod(0)  # like a folder macOS has not approved
         try:
-            names = [r["name"] for r in self.get("/api/search", q="")["results"]]
-            self.assertEqual(sorted(names), ["api", "calculator"])
-            self.assertEqual([r["name"] for r in self.get("/api/search", q="CALC")["results"]],
-                             ["calculator"])
+            spaces = self.get("/api/workspaces")
             self.assertNotIn("locked", [e["name"] for e in self.get("/api/tree")["entries"]])
         finally:
             locked.chmod(0o755)
+        self.assertEqual([r["name"] for r in spaces["recent"]], ["calculator"])
+        self.assertEqual(spaces["recent"][0]["reviews"], 1)
+        self.assertEqual([r["name"] for r in spaces["available"]], ["api"])
+        self.assertEqual([r["name"] for r in spaces["blocked"]], ["locked"])
 
     def test_to_lists_only_commits_older_than_from(self):
         git(self.repo, "checkout", "-qb", "feature")

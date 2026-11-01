@@ -25,118 +25,106 @@ function useTheme() {
   return [theme, setTheme];
 }
 
-// --- tree -------------------------------------------------------------------
+// --- projects sidebar -----------------------------------------------------------
 
-function TreeNode({ entry, depth, selected, onSelect }) {
-  const [open, setOpen] = useState(false);
-  const [children, setChildren] = useState(null);
-  const [error, setError] = useState("");
-
-  const toggle = async () => {
-    if (!open && children === null) {
-      try {
-        setChildren((await api.tree(entry.path)).entries);
-      } catch (e) {
-        setError(e.message);
-        setChildren([]);
-      }
+// Per-browser preferences (Settings page).
+function usePrefs() {
+  const [prefs, setPrefs] = useState(() => {
+    try {
+      return { showBlocked: false, ...JSON.parse(localStorage.getItem("autosde-prefs") || "{}") };
+    } catch {
+      return { showBlocked: false };
     }
-    setOpen(!open);
-  };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("autosde-prefs", JSON.stringify(prefs));
+    } catch {
+      /* private mode */
+    }
+  }, [prefs]);
+  return [prefs, (change) => setPrefs((p) => ({ ...p, ...change }))];
+}
 
+function ProjectList({ title, items, selected, onSelect, blocked }) {
+  if (!items.length) return null;
   return (
-    <li>
-      <div
-        className={`node ${selected === entry.path ? "selected" : ""}`}
-        style={{ paddingLeft: 8 + depth * 14 }}
-      >
-        <button className="twisty" onClick={toggle} aria-label={open ? "Collapse" : "Expand"}>
-          {open ? "▾" : "▸"}
-        </button>
-        <span className="name" onClick={entry.repo ? () => onSelect(entry.path) : toggle}>
-          {entry.repo ? "◆" : "📁"} {entry.name}
-        </span>
-        {entry.repo && (
-          <button className="pick" onClick={() => onSelect(entry.path)}>
-            Select
-          </button>
-        )}
-      </div>
-      {open && (
-        <ul>
-          {error && <li className="muted small" style={{ paddingLeft: 22 + depth * 14 }}>{error}</li>}
-          {children?.map((child) => (
-            <TreeNode
-              key={child.path}
-              entry={child}
-              depth={depth + 1}
-              selected={selected}
-              onSelect={onSelect}
-            />
-          ))}
-          {children?.length === 0 && !error && (
-            <li className="muted small" style={{ paddingLeft: 22 + depth * 14 }}>empty</li>
-          )}
-        </ul>
-      )}
-    </li>
+    <section className="group">
+      <h3>{title} <span className="count">{items.length}</span></h3>
+      <ul className="tree">
+        {items.map((r) => (
+          <li key={r.path}>
+            <div className={`node ${selected === r.path ? "selected" : ""} ${blocked ? "blocked" : ""}`}
+              title={blocked ? `${r.path} — macOS has not approved access` : r.path}
+              onClick={blocked ? undefined : () => onSelect(r.path)}>
+              <span className="name">{blocked ? "🔒" : "◆"} {r.name}
+                <span className="muted small"> {r.path.split("/").slice(-2, -1)[0]}</span>
+              </span>
+              {r.reviews > 0 && <span className="count">{r.reviews}</span>}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
-function Tree({ selected, onSelect }) {
-  const [root, setRoot] = useState(null);
+function Workspaces({ selected, onSelect, showBlocked, refresh }) {
+  const [query, setQuery] = useState("");
+  const [data, setData] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    api.tree().then(setRoot).catch((e) => setError(e.message));
-  }, []);
-  if (error) return <p className="error">{error}</p>;
-  if (!root) return <p className="muted">Loading…</p>;
-  return (
-    <ul className="tree">
-      {root.entries.map((entry) => (
-        <TreeNode key={entry.path} entry={entry} depth={0} selected={selected} onSelect={onSelect} />
-      ))}
-    </ul>
-  );
-}
-
-// Search across every repository under your home folder; the tree when empty.
-function Workspaces({ selected, onSelect }) {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState(null);
-  useEffect(() => {
-    if (!query.trim()) return setResults(null);
-    let live = true;
-    const timer = setTimeout(() => {
-      api.search(query).then((data) => live && setResults(data.results))
-        .catch(() => live && setResults([]));
-    }, 200);
-    return () => { live = false; clearTimeout(timer); };
-  }, [query]);
+    setData(null);
+    api.workspaces().then(setData).catch((e) => setError(e.message));
+  }, [refresh]);
+  const q = query.trim().toLowerCase();
+  const match = (r) => !q || r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q);
+  const pick = (list) => (data?.[list] || []).filter(match);
+  const shown = data && pick("recent").length + pick("available").length
+    + (showBlocked ? pick("blocked").length : 0);
   return (
     <>
-      <input className="search" type="search" value={query} placeholder="Search repositories"
-        onChange={(e) => setQuery(e.target.value)} aria-label="Search repositories" />
-      {results === null ? (
-        <Tree selected={selected} onSelect={onSelect} />
-      ) : results.length === 0 ? (
-        <p className="muted small">No repositories match.</p>
-      ) : (
-        <ul className="tree">
-          {results.map((r) => (
-            <li key={r.path}>
-              <div className={`node ${selected === r.path ? "selected" : ""}`} title={r.path}
-                onClick={() => onSelect(r.path)}>
-                <span className="name">◆ {r.name}
-                  <span className="muted small"> {r.path.split("/").slice(-2, -1)[0]}</span>
-                </span>
-                {r.project_id && <span className="badge">reviewed</span>}
-              </div>
-            </li>
-          ))}
-        </ul>
+      <input className="search" type="search" value={query} placeholder="Search projects"
+        onChange={(e) => setQuery(e.target.value)} aria-label="Search projects" />
+      {error && <p className="error small">{error}</p>}
+      {!data && !error && <p className="muted small">Finding repositories…</p>}
+      {data && (
+        <>
+          <ProjectList title="Recent" items={pick("recent")} selected={selected} onSelect={onSelect} />
+          <ProjectList title="Available" items={pick("available")} selected={selected} onSelect={onSelect} />
+          {showBlocked && <ProjectList title="Blocked" items={pick("blocked")} blocked />}
+          {!shown && <p className="muted small">{q ? "No projects match." : "No git repositories found."}</p>}
+          {!showBlocked && data.blocked.length > 0 && (
+            <p className="muted small hint">{data.blocked.length} blocked folder(s) hidden · Settings</p>
+          )}
+        </>
       )}
     </>
+  );
+}
+
+function Settings({ theme, setTheme, prefs, setPrefs, onRescan }) {
+  return (
+    <div className="card">
+      <h2>Settings</h2>
+      <label className="field setting">
+        <span>Theme</span>
+        <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+          {THEMES.map((t) => <option key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</option>)}
+        </select>
+      </label>
+      <label className="toggle setting">
+        <input type="checkbox" checked={prefs.showBlocked}
+          onChange={(e) => setPrefs({ showBlocked: e.target.checked })} />
+        Show blocked folders and projects
+      </label>
+      <p className="small muted">
+        Blocked means macOS has not approved AutoSDE (your terminal) for that folder. To review
+        a blocked project, allow access in System Settings → Privacy &amp; Security → Files and
+        Folders, then rescan.
+      </p>
+      <button className="secondary" onClick={onRescan}>Rescan repositories</button>
+    </div>
   );
 }
 
@@ -466,7 +454,7 @@ function Home({ onOpen, onProject }) {
     <>
       <div className="card intro">
         <h2>Pick a repository</h2>
-        <p className="muted">Expand folders in the tree and select a git repository (◆) to choose a commit range.</p>
+        <p className="muted">Search or pick a project in the sidebar to choose a commit range.</p>
       </div>
       <div className="card">
         <h3>Projects</h3>
@@ -552,6 +540,7 @@ function Crumbs({ view, canGoBack, onBack, go }) {
   if (view.kind === "project") trail.push({ label: "Past reviews" });
   if (view.kind === "review") trail.push({ label: `Review #${view.id}` });
   if (view.kind === "agents") trail.push({ label: "Agents" });
+  if (view.kind === "settings") trail.push({ label: "Settings" });
   return (
     <nav className="crumbs">
       <button className="secondary" onClick={onBack} disabled={!canGoBack} aria-label="Back">←</button>
@@ -572,6 +561,8 @@ function Crumbs({ view, canGoBack, onBack, go }) {
 
 export default function App() {
   const [theme, setTheme] = useTheme();
+  const [prefs, setPrefs] = usePrefs();
+  const [scan, setScan] = useState(0);
   const [session, setSession] = useState(null);
   const [error, setError] = useState("");
   const [view, setView] = useState({ kind: "home" });
@@ -599,18 +590,17 @@ export default function App() {
   return (
     <div className="shell">
       <header>
-        <button className="menu" onClick={() => setDrawer(!drawer)} aria-label="Folders">☰</button>
+        <button className="menu" onClick={() => setDrawer(!drawer)} aria-label="Projects">☰</button>
         <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>AutoSDE</a>
         <span className="grow" />
         <a href="#" className={view.kind === "agents" ? "active" : ""}
           onClick={(e) => (e.preventDefault(), go({ kind: "agents" }))}>Agents</a>
-        <select value={theme} onChange={(e) => setTheme(e.target.value)} aria-label="Theme">
-          {THEMES.map((t) => <option key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</option>)}
-        </select>
+        <a href="#" className={view.kind === "settings" ? "active" : ""}
+          onClick={(e) => (e.preventDefault(), go({ kind: "settings" }))}>Settings</a>
       </header>
       <aside className={drawer ? "open" : ""}>
-        <h3>Workspaces</h3>
-        {session && <Workspaces selected={view.repo} onSelect={(repo) => go({ kind: "repo", repo })} />}
+        {session && <Workspaces selected={view.repo} showBlocked={prefs.showBlocked} refresh={scan}
+          onSelect={(repo) => go({ kind: "repo", repo })} />}
       </aside>
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
       <main>
@@ -625,6 +615,10 @@ export default function App() {
         )}
         {view.kind === "review" && (
           <Review key={view.id} id={view.id} onContext={context} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
+        )}
+        {view.kind === "settings" && (
+          <Settings theme={theme} setTheme={setTheme} prefs={prefs} setPrefs={setPrefs}
+            onRescan={() => setScan((n) => n + 1)} />
         )}
         {session && view.kind === "agents" && <Agents defaultModel={session.model} />}
         {view.kind === "project" && <Project key={view.id} id={view.id} onOpen={(id) => go({ kind: "review", id, repo: view.repo })}

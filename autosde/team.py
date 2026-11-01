@@ -1,6 +1,7 @@
 """Coordinator -> parallel specialists -> aggregator, over one committed range."""
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -121,6 +122,23 @@ def plan_schema(agents):
     item = schema["properties"]["assignments"]["items"]["properties"]["agent"]
     item["enum"] = list(agents)
     return schema
+
+
+def changed_lines(diff):
+    """Head-side line ranges a diff adds or modifies, e.g. [[11, 17]]."""
+    ranges, line = [], 0
+    for text in diff.splitlines():
+        if hunk := re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", text):
+            line = int(hunk[1])
+        elif text.startswith("+") and not text.startswith("+++"):
+            if ranges and ranges[-1][1] == line - 1:
+                ranges[-1][1] = line
+            else:
+                ranges.append([line, line])
+            line += 1
+        elif text.startswith(" "):
+            line += 1
+    return ranges
 
 
 def numbered(text):
@@ -273,7 +291,7 @@ class Team:
             ))
         return call, findings
 
-    def _aggregate(self, result):
+    def _aggregate(self, result, by_path=None):
         if not result.findings:
             result.summary = "No findings were reported."
             return
@@ -284,7 +302,10 @@ class Team:
                                         "severity", "title", "description", "recommendation")}
             for f in result.findings
         ]
-        data = self._ask(call, prompt("aggregator.md"), json.dumps({"findings": listing}),
+        changed = {path: changed_lines(f.diff) for path, f in (by_path or {}).items()
+                   if path in call.files}
+        data = self._ask(call, prompt("aggregator.md"),
+                         json.dumps({"changed_lines": changed, "findings": listing}),
                          VERDICT_SCHEMA, 1500)
         if data is None:
             result.limitations.append("Aggregator unavailable; all findings were kept.")
@@ -351,7 +372,7 @@ class Team:
             for n, finding in enumerate(findings, 1):
                 finding.id = f"{call.agent}-{n}"
                 result.findings.append(finding)
-        self._aggregate(result)
+        self._aggregate(result, by_path)
         return result
 
     def run(self, files, selection=None):

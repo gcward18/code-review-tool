@@ -1,4 +1,5 @@
 import json
+import json
 import os
 import stat
 import tempfile
@@ -9,7 +10,7 @@ from autosde import git as capture_git
 from autosde.db import Store
 from autosde.llm import ScriptedModel
 from autosde.review import ReviewError, run_review
-from autosde.team import Team, numbered
+from autosde.team import Team, changed_lines, numbered
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
 
@@ -42,6 +43,14 @@ class GitTests(unittest.TestCase):
         self.assertEqual(changes.name, "calculator")
 
 
+class ChangedLinesTests(unittest.TestCase):
+    def test_head_side_ranges_of_added_lines(self):
+        diff = ("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,5 @@\n def f():\n-    return 1\n"
+                "+    a = 1\n+    b = 2\n+    return a\n\\ No newline at end of file\n@@ -9 +12,2 @@\n"
+                " ctx\n+new\n")
+        self.assertEqual(changed_lines(diff), [[2, 4], [13, 13]])
+
+
 class TeamTests(unittest.TestCase):
     def files(self):
         tmp = tempfile.TemporaryDirectory()
@@ -53,6 +62,8 @@ class TeamTests(unittest.TestCase):
                                "aggregator": [verdict()]})
         result = Team(model).run(self.files())
         self.assertEqual([c.agent for c in result.calls], ["coordinator", "python", "aggregator"])
+        sent = json.loads(next(c for c in model.calls if c["role"] == "aggregator")["prompt"])
+        self.assertEqual(sent["changed_lines"], {"calculator.py": [[2, 5]]})
         self.assertEqual([(f.id, f.file, f.start_line, f.kept) for f in result.findings],
                          [("python-1", "calculator.py", 4, True)])
         coordinator, specialist, aggregator = model.calls

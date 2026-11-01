@@ -46,7 +46,9 @@ header {
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .brand { font-weight: 700; font-size: 17px; color: var(--text); }
-.menu { display: none; }
+.menu { background: transparent; color: var(--text); border-color: var(--line); padding: 4px 10px; }
+.shell.collapsed { grid-template-columns: 0 1fr; }
+.shell.collapsed aside { visibility: hidden; padding: 0; border: 0; }
 aside {
   grid-area: aside; overflow: auto; padding: 12px 8px 24px;
   background: var(--panel); border-right: 1px solid var(--line);
@@ -100,7 +102,8 @@ details summary { cursor: pointer; font-weight: 600; }
 
 /* Narrow screens: the tree becomes a drawer. */
 @media (max-width: 760px) {
-  .shell { grid-template-columns: 1fr; grid-template-areas: "header" "main"; }
+  .shell, .shell.collapsed { grid-template-columns: 1fr; grid-template-areas: "header" "main"; }
+  .shell.collapsed aside { visibility: visible; padding: 12px 8px 24px; }
   .menu { display: inline-block; background: transparent; color: var(--text); border-color: var(--line); padding: 4px 10px; }
   aside { position: fixed; top: 52px; bottom: 0; left: 0; width: min(86vw, 320px); z-index: 20; transform: translateX(-100%); transition: transform .2s; }
   aside.open { transform: none; box-shadow: 0 0 40px rgba(0, 0, 0, .4); }
@@ -177,3 +180,9 @@ pre.fix .hunk { color: var(--muted); }
 .md-table table { display: table; font-size: 13px; }
 .md-table th, .md-table td { padding: 4px 8px; }
 .md-code { line-height: 20px; } .md-code.fix div { height: 20px; }
+
+/* Project page: picker and chat left, reviews and agents right. */
+main > .split { max-width: 1600px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.split .col { min-width: 0; }
+.split .messages { max-height: 55vh; }
+@media (max-width: 1100px) { main > .split { grid-template-columns: minmax(0, 1fr); } }

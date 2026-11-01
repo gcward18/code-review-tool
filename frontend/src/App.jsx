@@ -140,7 +140,7 @@ function Options({ items }) {
   ));
 }
 
-function RangePicker({ repoPath, onStarted, onProject }) {
+function RangePicker({ repoPath, onStarted, onOpen }) {
   const [repo, setRepo] = useState(null);
   const [from, setFrom] = useState("");
   const [older, setOlder] = useState(null);
@@ -191,15 +191,13 @@ function RangePicker({ repoPath, onStarted, onProject }) {
   if (error && !repo) return <div className="card error">{error}</div>;
   if (!repo) return <div className="card muted">Loading repository…</div>;
   return (
-    <>
+    <div className={repo.project_id ? "split" : ""}>
+    <div className="col">
     <div className="card">
       <div className="actions title">
         <h2 className="grow">
           {repo.name} <code className="muted small">{repo.path}</code>
         </h2>
-        {repo.project_id && (
-          <button className="secondary" onClick={() => onProject(repo.project_id)}>Past reviews</button>
-        )}
       </div>
       <div className="range">
         <label>
@@ -230,7 +228,11 @@ function RangePicker({ repoPath, onStarted, onProject }) {
       {error && <p className="error">{error}</p>}
     </div>
     {repo.project_id && <Chat projectId={repo.project_id} />}
-    </>
+    </div>
+    {repo.project_id && (
+      <div className="col"><ProjectHistory projectId={repo.project_id} onOpen={onOpen} /></div>
+    )}
+    </div>
   );
 }
 
@@ -572,22 +574,15 @@ function Chat({ projectId }) {
   );
 }
 
-function Project({ id, onOpen, onReview, onContext }) {
+// Right column of a project: its reviews and the agents that ran.
+function ProjectHistory({ projectId, onOpen }) {
   const [project, setProject] = useState(null);
   useEffect(() => {
-    api.project(id).then((p) => (setProject(p), onContext({ repo: p.path, name: p.name })));
-  }, [id]);
-  if (!project) return <div className="card muted">Loading…</div>;
+    api.project(projectId).then(setProject);
+  }, [projectId]);
+  if (!project) return <div className="card muted">Loading history…</div>;
   return (
     <>
-      <div className="card">
-        <div className="actions title">
-          <h2 className="grow">{project.name}</h2>
-          <button onClick={() => onReview(project.path)}>New review</button>
-        </div>
-        <code className="muted small">{project.path}</code>
-      </div>
-      <Chat projectId={project.id} />
       <div className="card">
         <h3>Reviews</h3>
         <ReviewTable reviews={project.reviews} onOpen={onOpen} />
@@ -595,7 +590,7 @@ function Project({ id, onOpen, onReview, onContext }) {
       <div className="card">
         <h3>Agents that ran</h3>
         <table>
-          <thead><tr><th>Role</th><th>Agent</th><th>Runs</th><th>OK</th><th>Failed</th><th>Findings kept</th></tr></thead>
+          <thead><tr><th>Role</th><th>Agent</th><th>Runs</th><th>OK</th><th>Failed</th><th>Kept</th></tr></thead>
           <tbody>
             {project.agents.map((a) => (
               <tr key={a.role + a.agent}>
@@ -609,12 +604,19 @@ function Project({ id, onOpen, onReview, onContext }) {
   );
 }
 
+// Projects open on their repository page, which holds history and chat.
+function ProjectRedirect({ id, go }) {
+  useEffect(() => {
+    api.project(id).then((p) => go({ kind: "repo", repo: p.path }, { replace: true }));
+  }, [id]);
+  return <div className="card muted">Loading…</div>;
+}
+
 // Where you are, with a way back: Home › project or repository › review.
 function Crumbs({ view, canGoBack, onBack, go }) {
   if (view.kind === "home") return null;
   const trail = [];
   if (view.repo) trail.push({ label: view.repo.split("/").pop(), to: { kind: "repo", repo: view.repo } });
-  if (view.kind === "project") trail.push({ label: "Past reviews" });
   if (view.kind === "review") trail.push({ label: `Review #${view.id}` });
   if (view.kind === "agents") trail.push({ label: "Agents" });
   if (view.kind === "settings") trail.push({ label: "Settings" });
@@ -650,8 +652,8 @@ export default function App() {
   }, []);
 
   const [history, setHistory] = useState([]);
-  const go = (next) => {
-    setHistory((h) => [...h.slice(-49), view]);
+  const go = (next, { replace = false } = {}) => {
+    if (!replace) setHistory((h) => [...h.slice(-49), view]);
     setView(next);
     setDrawer(false);
   };
@@ -665,9 +667,11 @@ export default function App() {
   };
 
   return (
-    <div className="shell">
+    <div className={`shell ${prefs.collapsed ? "collapsed" : ""}`}>
       <header>
-        <button className="menu" onClick={() => setDrawer(!drawer)} aria-label="Projects">☰</button>
+        <button className="menu" aria-label="Toggle projects menu"
+          onClick={() => (window.matchMedia("(max-width: 760px)").matches
+            ? setDrawer(!drawer) : setPrefs({ collapsed: !prefs.collapsed }))}>☰</button>
         <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>AutoSDE</a>
         <span className="grow" />
         <a href="#" className={view.kind === "agents" ? "active" : ""}
@@ -687,8 +691,9 @@ export default function App() {
           <Home onOpen={(id) => go({ kind: "review", id })} onProject={(id) => go({ kind: "project", id })} />
         )}
         {view.kind === "repo" && (
-          <RangePicker repoPath={view.repo} onStarted={(id) => go({ kind: "review", id, repo: view.repo })}
-            onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
+          <RangePicker key={view.repo} repoPath={view.repo}
+            onStarted={(id) => go({ kind: "review", id, repo: view.repo })}
+            onOpen={(id) => go({ kind: "review", id, repo: view.repo })} />
         )}
         {view.kind === "review" && (
           <Review key={view.id} id={view.id} onContext={context} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
@@ -698,8 +703,7 @@ export default function App() {
             onRescan={() => setScan((n) => n + 1)} />
         )}
         {session && view.kind === "agents" && <Agents defaultModel={session.model} />}
-        {view.kind === "project" && <Project key={view.id} id={view.id} onOpen={(id) => go({ kind: "review", id, repo: view.repo })}
-          onReview={(repo) => go({ kind: "repo", repo })} onContext={context} />}
+        {view.kind === "project" && <ProjectRedirect id={view.id} go={go} />}
       </main>
     </div>
   );

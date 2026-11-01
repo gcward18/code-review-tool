@@ -30,6 +30,15 @@ On the web page, browse your home folder, **Select** a git repository, then pick
 
 Only committed history is reviewed; uncommitted edits are ignored.
 
+### Approval before tokens are spent
+
+Every review is planned first. Built-in rules flag files that cost tokens but rarely contain defects (IDE settings such as `.idea/`, lockfiles, build and vendored output, minified bundles, source maps, data files, OS metadata). The coordinator then sees only file paths and sizes, assigns files to specialists, and may flag more with a reason. The review waits for your approval:
+
+- **CLI:** the plan prints with `[x]` and `[ ]` marks, flag reasons and an estimated cost, then asks `[y]es / [a]ll, including flagged / [N]o`. Use `--yes` to approve as proposed, and `--include-flagged` or `--include PATH` to add flagged files. A non-interactive shell without `--yes` cancels.
+- **Web page:** the review page shows a checkbox per file (flagged files unchecked) with Approve and Cancel.
+
+Only approved files reach the specialists. The database records each file's plan, flag and approval. A plan waiting for approval keeps file contents in memory only; if the web server restarts, the plan expires and you resubmit.
+
 ## Configuration
 
 | Variable | Default |

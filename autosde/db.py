@@ -1,5 +1,6 @@
 """SQLite store: projects, reviews, agent runs and findings. No source code is stored."""
 
+import json
 import os
 import sqlite3
 import time
@@ -18,7 +19,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     range_spec TEXT NOT NULL,
     base_sha TEXT NOT NULL,
     head_sha TEXT NOT NULL,
-    status TEXT NOT NULL,           -- running | completed | failed
+    status TEXT NOT NULL,           -- planning | awaiting_approval | running | completed | failed | cancelled | expired
     model TEXT NOT NULL,
     summary TEXT,
     limitations TEXT,               -- newline-separated
@@ -60,6 +61,16 @@ CREATE TABLE IF NOT EXISTS findings (
     kept INTEGER NOT NULL,
     rejection TEXT
 );
+CREATE TABLE IF NOT EXISTS review_files (
+    id INTEGER PRIMARY KEY,
+    review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    agent TEXT,                     -- planned specialist (NULL when not reviewable)
+    flag TEXT,                      -- why it is probably not worth tokens
+    skipped TEXT,                   -- why it could not be sent (binary, size, secret)
+    included INTEGER                -- NULL until approved; 1 reviewed, 0 not approved
+);
+CREATE INDEX IF NOT EXISTS files_review ON review_files(review_id);
 CREATE INDEX IF NOT EXISTS reviews_project ON reviews(project_id, started_at);
 CREATE INDEX IF NOT EXISTS runs_review ON agent_runs(review_id);
 CREATE INDEX IF NOT EXISTS findings_review ON findings(review_id);
@@ -93,25 +104,79 @@ class Store:
     def start_review(self, project_id, changes, model):
         return self.db.execute(
             "INSERT INTO reviews(project_id, range_spec, base_sha, head_sha, status, model,"
-            " files_changed, started_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?)",
+            " files_changed, started_at) VALUES (?, ?, ?, ?, 'planning', ?, ?, ?)",
             (project_id, changes.range_spec, changes.base, changes.head, model,
              len(changes.files), time.time()),
         ).lastrowid
 
-    def finish_review(self, review_id, result, *, input_price, output_price):
+    def _calls(self, review_id, result):
+        for c in result.calls:
+            if c.stored:
+                continue
+            self.db.execute(
+                "INSERT INTO agent_runs(review_id, role, agent, files, focus, status, error,"
+                " input_tokens, output_tokens, seconds) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (review_id, c.role, c.agent, "\n".join(c.files), c.focus, c.status, c.error,
+                 c.input_tokens, c.output_tokens, round(c.seconds, 3)),
+            )
+            c.stored = True
+
+    @staticmethod
+    def _totals(result, input_price, output_price):
         incoming = sum(c.input_tokens for c in result.calls)
         outgoing = sum(c.output_tokens for c in result.calls)
-        cost = (incoming * input_price + outgoing * output_price) / 1_000_000
-        failed = result.calls and all(c.status != "ok" for c in result.calls if c.role == "specialist")
+        return incoming, outgoing, round((incoming * input_price + outgoing * output_price) / 1e6, 6)
+
+    def save_plan(self, review_id, result, files, *, input_price, output_price):
+        """Store the coordinator call and the per-file plan; await approval."""
+        agent_of = {p: agent for agent, item in result.plan.items() for p in item["files"]}
+        incoming, outgoing, cost = self._totals(result, input_price, output_price)
         self.db.execute("BEGIN")
         try:
-            for c in result.calls:
+            self._calls(review_id, result)
+            for f in files:
                 self.db.execute(
-                    "INSERT INTO agent_runs(review_id, role, agent, files, focus, status, error,"
-                    " input_tokens, output_tokens, seconds) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (review_id, c.role, c.agent, "\n".join(c.files), c.focus, c.status, c.error,
-                     c.input_tokens, c.output_tokens, round(c.seconds, 3)),
+                    "INSERT INTO review_files(review_id, path, agent, flag, skipped)"
+                    " VALUES (?,?,?,?,?)",
+                    (review_id, f.path, agent_of.get(f.path), result.flagged.get(f.path), f.skipped),
                 )
+            self.db.execute(
+                "UPDATE reviews SET status = 'awaiting_approval', input_tokens = ?,"
+                " output_tokens = ?, cost_usd = ? WHERE id = ?",
+                (incoming, outgoing, cost, review_id),
+            )
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def mark_running(self, review_id):
+        self.db.execute("UPDATE reviews SET status = 'running' WHERE id = ?", (review_id,))
+
+    def cancel_review(self, review_id, result=None, status="cancelled"):
+        self.db.execute(
+            "UPDATE review_files SET included = 0 WHERE review_id = ? AND agent IS NOT NULL",
+            (review_id,),
+        )
+        self.db.execute(
+            "UPDATE reviews SET status = ?, summary = ?, finished_at = ? WHERE id = ?",
+            (status, "Not run: the plan was not approved." if status == "cancelled"
+             else "Not run: the plan expired before approval.", time.time(), review_id),
+        )
+
+    def finish_review(self, review_id, result, *, input_price, output_price):
+        incoming, outgoing, cost = self._totals(result, input_price, output_price)
+        failed = any(c.role == "specialist" for c in result.calls) and all(
+            c.status != "ok" for c in result.calls if c.role == "specialist"
+        )
+        self.db.execute("BEGIN")
+        try:
+            self._calls(review_id, result)
+            self.db.execute(
+                "UPDATE review_files SET included = (path IN (SELECT value FROM json_each(?)))"
+                " WHERE review_id = ? AND agent IS NOT NULL",
+                (json.dumps(sorted(result.approved)), review_id),
+            )
             for f in result.findings:
                 self.db.execute(
                     "INSERT INTO findings(review_id, finding_key, agent, file, start_line, end_line,"
@@ -125,7 +190,7 @@ class Store:
                 "UPDATE reviews SET status = ?, summary = ?, limitations = ?, input_tokens = ?,"
                 " output_tokens = ?, cost_usd = ?, finished_at = ? WHERE id = ?",
                 ("failed" if failed else "completed", result.summary,
-                 "\n".join(result.limitations), incoming, outgoing, round(cost, 6),
+                 "\n".join(result.limitations), incoming, outgoing, cost,
                  time.time(), review_id),
             )
             self.db.execute("COMMIT")
@@ -175,6 +240,11 @@ class Store:
         review = rows[0]
         review["agent_runs"] = self._all(
             "SELECT * FROM agent_runs WHERE review_id = ? ORDER BY id", review_id
+        )
+        review["files"] = self._all(
+            "SELECT path, agent, flag, skipped, included FROM review_files"
+            " WHERE review_id = ? ORDER BY flag IS NOT NULL, path",
+            review_id,
         )
         review["findings"] = self._all(
             "SELECT * FROM findings WHERE review_id = ? ORDER BY kept DESC,"

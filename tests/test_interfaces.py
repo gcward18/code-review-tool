@@ -74,7 +74,7 @@ class CliTests(Seeded):
     def test_review_command_uses_the_model_and_prints_the_report(self):
         with patch("autosde.cli.OpenAIModel", return_value=self.scripted()), \
                 patch("autosde.review.scanner", return_value=clean_scan):
-            code, out = self.run_cli("review", str(self.repo), "HEAD~1..HEAD")
+            code, out = self.run_cli("review", str(self.repo), "HEAD~1..HEAD", "--yes")
         self.assertEqual(code, 0)
         self.assertIn("Total is overwritten", out)
 
@@ -94,6 +94,14 @@ class WebTests(Seeded):
         self.addCleanup(server.shutdown)
         return app, f"http://127.0.0.1:{app.port}"
 
+    def wait(self, page_url, text):
+        for _ in range(100):
+            page = urllib.request.urlopen(page_url, timeout=5).read().decode()
+            if text in page:
+                return page
+            threading.Event().wait(0.1)
+        self.fail(f"{text!r} never appeared")
+
     def post(self, url, data, origin=None):
         request = urllib.request.Request(url + "/reviews", data=urllib.parse.urlencode(data).encode(),
                                          method="POST")
@@ -109,11 +117,14 @@ class WebTests(Seeded):
                                        "from": self.base, "to": "HEAD"},
                                  origin=url)
         self.assertRegex(response.url, r"/reviews/\d+$")
-        for _ in range(50):
-            page = urllib.request.urlopen(response.url, timeout=5).read().decode()
-            if "completed" in page:
-                break
-            threading.Event().wait(0.1)
+        page = self.wait(response.url, "Approve the plan")
+        self.assertIn('name="file" value="calculator.py" checked', page)
+        approve = urllib.request.Request(
+            response.url + "/approve", method="POST",
+            data=urllib.parse.urlencode({"token": app.token, "file": "calculator.py"}).encode(),
+            headers={"Origin": url})
+        urllib.request.urlopen(approve, timeout=10).close()
+        page = self.wait(response.url, "completed")
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
         self.assertNotIn("<script>", page)
         home = urllib.request.urlopen(url + "/", timeout=5).read().decode()
@@ -128,9 +139,11 @@ class WebTests(Seeded):
         good = {"token": app.token, "repo": str(self.repo), "from": self.base, "to": "HEAD"}
         with self.assertRaises(urllib.error.HTTPError) as bad_token:
             self.post(url, good | {"token": "wrong"}, origin=url)
+        bad_token.exception.close()
         self.assertEqual(bad_token.exception.code, 400)
         with self.assertRaises(urllib.error.HTTPError) as cross_site:
             self.post(url, good, origin="https://evil.example")
+        cross_site.exception.close()
         self.assertEqual(cross_site.exception.code, 403)
         self.assertEqual(self.store.reviews(), [])
 

@@ -8,7 +8,7 @@ from autosde import report
 from autosde.config import load_settings
 from autosde.db import Store
 from autosde.llm import OpenAIModel
-from autosde.review import ReviewError, run_review
+from autosde.review import ReviewError, approve, cancel, prepare
 
 
 def _table(rows, columns):
@@ -54,6 +54,11 @@ def main(argv=None):
     review.add_argument("range", help="A..B, A.. (to HEAD), or one commit C (C~1..C)")
     review.add_argument("--format", choices=("text", "json", "sarif"), default="text")
     review.add_argument("--output", help="Write the result to a file")
+    review.add_argument("--yes", action="store_true", help="Approve the proposed plan without asking")
+    review.add_argument("--include-flagged", action="store_true",
+                        help="Also review files flagged as low value")
+    review.add_argument("--include", action="append", default=[], metavar="PATH",
+                        help="Also review this flagged file (repeatable)")
 
     commands.add_parser("projects", help="List reviewed projects")
     reviews = commands.add_parser("reviews", help="List reviews")
@@ -74,11 +79,38 @@ def main(argv=None):
     if args.command == "review":
         try:
             model = OpenAIModel(settings.model, reasoning_effort=settings.reasoning_effort)
-            print(f"Reviewing {args.range} in {args.repo} with {settings.model}...", file=sys.stderr)
-            review_id = run_review(args.repo, args.range, store=store, model=model, settings=settings)
+            print(f"Planning {args.range} in {args.repo} with {settings.model}...", file=sys.stderr)
+            pending = prepare(args.repo, args.range, store=store, model=model, settings=settings)
+            plan = pending.result
+            if not plan.plan:
+                store.finish_review(pending.review_id, plan, input_price=settings.input_price,
+                                    output_price=settings.output_price)
+            else:
+                selection = plan.default_selection()
+                if args.include_flagged:
+                    selection |= set(plan.flagged) & set(plan.files())
+                selection |= set(args.include) & set(plan.files())
+                print(report.plan_text(plan, pending.changes.files, selection,
+                                       pending.estimate(selection), settings), file=sys.stderr)
+                if not args.yes:
+                    answer = ""
+                    if sys.stdin.isatty():
+                        answer = input(f"Run specialists on {len(selection)} file(s)? "
+                                       "[y]es / [a]ll, including flagged / [N]o: ").strip().lower()
+                    else:
+                        print("Approval needed: rerun with --yes (non-interactive).", file=sys.stderr)
+                    if answer == "a":
+                        selection |= set(plan.files())
+                    elif answer not in ("y", "yes"):
+                        cancel(pending, store=store)
+                        print(f"Cancelled review #{pending.review_id}; nothing else was sent.",
+                              file=sys.stderr)
+                        return 1
+                approve(pending, store=store, settings=settings, selection=selection)
         except (ReviewError, RuntimeError) as error:
             print(f"error: {error}", file=sys.stderr)
             return 1
+        review_id = pending.review_id
         stored = store.review(review_id)
         _emit(_render(stored, args.format), args.output)
         return 0 if stored["status"] == "completed" else 1

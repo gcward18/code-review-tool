@@ -10,6 +10,26 @@ def when(timestamp):
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M") if timestamp else "-"
 
 
+def plan_text(result, files, selection, estimate, settings):
+    """The approval view: who reviews what, what is flagged, and roughly what it costs."""
+    agent_of = {p: agent for agent, item in result.plan.items() for p in item["files"]}
+    lines = ["", "Plan:"]
+    for f in files:
+        if f.skipped:
+            lines.append(f"  -   {f.path}  (not sendable: {f.skipped})")
+            continue
+        mark = "[x]" if f.path in selection else "[ ]"
+        why = f"  flagged: {result.flagged[f.path]}" if f.path in result.flagged else ""
+        lines.append(f"  {mark} {f.path} -> {agent_of.get(f.path, '?')}{why}")
+    tokens_in, tokens_out, agents = estimate
+    cost = (tokens_in * settings.input_price + tokens_out * settings.output_price) / 1e6
+    lines.append(
+        f"Estimate: {agents} specialist(s), ~{tokens_in:,} input tokens, "
+        f"up to {tokens_out:,} output tokens, at most ${cost:.4f}."
+    )
+    return "\n".join(lines)
+
+
 def text(review):
     lines = [
         f"Review #{review['id']}  {review['project']}  {review['range_spec']}"
@@ -22,6 +42,14 @@ def text(review):
         lines.append(f"Error: {review['error']}")
     if review.get("summary"):
         lines += ["", review["summary"]]
+    reviewed = [f for f in review.get("files", []) if f["agent"]]
+    if reviewed:
+        lines += ["", "Files:"]
+        for f in review["files"]:
+            state = ("reviewed" if f["included"] == 1 else "not approved" if f["included"] == 0
+                     else "pending" if f["agent"] else f"skipped: {f['skipped']}")
+            flag = f"  (flagged: {f['flag']})" if f["flag"] else ""
+            lines.append(f"  {f['path']:<40} {state}{flag}")
     lines += ["", "Agents:"]
     for run in review["agent_runs"]:
         detail = f" ({run['error']})" if run["error"] else ""

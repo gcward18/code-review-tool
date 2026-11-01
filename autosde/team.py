@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from autosde.noise import flag
+
 PROMPTS = Path(__file__).parent / "prompts"
 EXTENSIONS = {
     "python": (".py",),
@@ -22,8 +24,17 @@ CATEGORIES = ("correctness", "security", "reliability", "performance", "maintain
 PLAN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["assignments", "rationale"],
+    "required": ["assignments", "flagged", "rationale"],
     "properties": {
+        "flagged": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["file", "reason"],
+                "properties": {"file": {"type": "string"}, "reason": {"type": "string"}},
+            },
+        },
         "assignments": {
             "type": "array",
             "items": {
@@ -126,6 +137,7 @@ class Call:
     seconds: float = 0.0
     error: str | None = None
     focus: str = ""
+    stored: bool = False  # already written to the database (planning step)
 
 
 @dataclass
@@ -149,9 +161,18 @@ class Finding:
 class TeamResult:
     calls: list[Call] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
-    plan: dict = field(default_factory=dict)
+    plan: dict = field(default_factory=dict)  # agent -> {"files": [...], "focus": "..."}
+    flagged: dict = field(default_factory=dict)  # path -> why it is probably not worth tokens
+    approved: set = field(default_factory=set)  # paths the specialists actually reviewed
     summary: str = ""
     limitations: list[str] = field(default_factory=list)
+
+    def files(self):
+        return [path for item in self.plan.values() for path in item["files"]]
+
+    def default_selection(self):
+        """Proposed approval: every planned file except flagged ones."""
+        return {path for path in self.files() if path not in self.flagged}
 
     @property
     def kept(self):
@@ -180,13 +201,20 @@ class Team:
     def _plan(self, files, result):
         call = Call(role="coordinator", agent="coordinator", files=[f.path for f in files])
         result.calls.append(call)
+        # Free rules first; the coordinator sees them and may flag more.
+        result.flagged = {f.path: reason for f in files if (reason := flag(f.path))}
         listing = [
             {"path": f.path, "status": f.status, "lines": max(1, len(f.head.splitlines())),
-             "changed_lines": sum(1 for l in f.diff.splitlines() if l[:1] in "+-")}
+             "changed_lines": sum(1 for l in f.diff.splitlines() if l[:1] in "+-"),
+             "rule_flag": result.flagged.get(f.path)}
             for f in files
         ]
         data = self._ask(call, prompt("coordinator.md"), json.dumps({"changed_files": listing}),
-                         PLAN_SCHEMA, 1200)
+                         PLAN_SCHEMA, 1500)
+        paths = {f.path for f in files}
+        for item in (data or {}).get("flagged", []):
+            if item.get("file") in paths and item["file"] not in result.flagged:
+                result.flagged[item["file"]] = f"coordinator: {item.get('reason', '')}".strip()
         plan, assigned = {}, set()
         for item in (data or {}).get("assignments", []):
             agent = item.get("agent")
@@ -259,22 +287,54 @@ class Team:
                 by_id[item["id"]].rejection = item.get("reason", "")
         result.summary = data.get("summary", "")
 
-    def run(self, files):
-        """Review the given ChangedFile list; files with a `skipped` reason are not sent."""
+    def plan(self, files):
+        """Coordinator step (paths only, cheap). Returns a result awaiting approval."""
         result = TeamResult()
         reviewable = [f for f in files if not f.skipped]
         for f in files:
             if f.skipped:
                 result.limitations.append(f"{f.path}: not reviewed ({f.skipped}).")
-        if not reviewable:
+        if reviewable:
+            self._plan(reviewable, result)
+        else:
             result.summary = "Nothing reviewable in this range."
+        return result
+
+    def estimate(self, result, files, selection):
+        """Rough upper bound for the approval step: (input tokens, output tokens, agents)."""
+        by_path = {f.path: f for f in files}
+        chars, agents = 0, 0
+        for agent, item in result.plan.items():
+            chosen = [by_path[p] for p in item["files"] if p in selection]
+            if chosen:
+                agents += 1
+                chars += len(prompt("specialist.md", agent=agent, focus=item["focus"]))
+                chars += sum(len(numbered(f.head)) + len(f.diff) + 60 for f in chosen)
+        return chars // 4, agents * 4000 + (1500 if agents else 0), agents
+
+    def execute(self, result, files, selection=None):
+        """Specialists and aggregator on the approved paths only (default: unflagged)."""
+        selection = result.default_selection() if selection is None else set(selection)
+        by_path = {f.path: f for f in files if not f.skipped}
+        result.approved = {p for p in result.files() if p in selection}
+        for path in result.files():
+            if path not in result.approved:
+                why = result.flagged.get(path)
+                result.limitations.append(
+                    f"{path}: not reviewed ({why}; not approved)." if why
+                    else f"{path}: not reviewed (not approved)."
+                )
+        work = [
+            (agent, {"files": [p for p in item["files"] if p in result.approved],
+                     "focus": item["focus"]})
+            for agent, item in result.plan.items()
+        ]
+        work = [(agent, item) for agent, item in work if item["files"]]
+        if not work:
+            result.summary = result.summary or "No files were approved for review."
             return result
-        by_path = {f.path: f for f in reviewable}
-        plan = self._plan(reviewable, result)
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            outcomes = list(pool.map(
-                lambda item: self._review(item[0], item[1], by_path, result), plan.items()
-            ))
+            outcomes = list(pool.map(lambda item: self._review(item[0], item[1], by_path, result), work))
         for call, findings in outcomes:
             result.calls.append(call)
             if call.status != "ok":
@@ -284,3 +344,11 @@ class Team:
                 result.findings.append(finding)
         self._aggregate(result)
         return result
+
+    def run(self, files, selection=None):
+        """Plan and execute in one go (notebooks/tests). Flagged files are skipped
+        unless `selection` names them."""
+        result = self.plan(files)
+        if not result.plan:
+            return result
+        return self.execute(result, files, selection)

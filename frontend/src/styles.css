@@ -1,18 +1,21 @@
 /* Themes: light, dark and Dracula (draculatheme.com palette). */
 :root,
 [data-theme="light"] {
+  --tok-keyword: #8e44ad; --tok-string: #1f7a3d; --tok-number: #b35c00; --tok-comment: #8a919c; --tok-call: #2457c5;
   --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6eb; --text: #1d2433; --muted: #6b7380;
   --accent: #2457c5; --accent-text: #ffffff; --hover: #eef2fb; --select: #dbe6fb;
   --ok: #1f7a3d; --error: #c2313a; --warn: #b26b00; --code: #f0f2f5;
   --sev-critical: #c2313a; --sev-high: #d0453a; --sev-medium: #c77a00; --sev-low: #5b6474;
 }
 [data-theme="dark"] {
+  --tok-keyword: #c792ea; --tok-string: #a5d6a7; --tok-number: #f78c6c; --tok-comment: #6b7380; --tok-call: #82aaff;
   --bg: #0f1218; --panel: #171b23; --line: #2a303b; --text: #e3e7ee; --muted: #8b93a1;
   --accent: #5b8def; --accent-text: #0f1218; --hover: #1f2531; --select: #233452;
   --ok: #4cc276; --error: #ff6b6b; --warn: #f0b84d; --code: #1f2531;
   --sev-critical: #ff5c5c; --sev-high: #ff7a59; --sev-medium: #f0b84d; --sev-low: #8b93a1;
 }
 [data-theme="dracula"] {
+  --tok-keyword: #ff79c6; --tok-string: #f1fa8c; --tok-number: #bd93f9; --tok-comment: #6272a4; --tok-call: #50fa7b;
   --bg: #282a36; --panel: #2f3242; --line: #44475a; --text: #f8f8f2; --muted: #9aa0c3;
   --accent: #bd93f9; --accent-text: #282a36; --hover: #3a3d52; --select: #44475a;
   --ok: #50fa7b; --error: #ff5555; --warn: #ffb86c; --code: #21222c;
@@ -123,9 +126,9 @@ header a.active { font-weight: 700; }
 .field { display: flex; flex-direction: column; gap: 3px; }
 .toggle { display: flex; align-items: center; gap: 8px; }
 .toggle input { width: auto; }
-.add { margin-top: 12px; } .add input { flex: 1 1 200px; width: auto; }
+form.add { margin-top: 12px; } form.add input { flex: 1 1 200px; width: auto; }
 .prompt { margin-bottom: 10px; }
-.picker { align-items: flex-end; margin-bottom: 12px; } .picker .add { margin: 0; flex: 1 1 260px; }
+.picker { align-items: flex-end; margin-bottom: 12px; } .picker form.add { margin: 0; flex: 1 1 260px; }
 .warn-text { color: var(--warn); }
 pre.fix { font: 13px/1.5 ui-monospace, Menlo, monospace; background: var(--code); border-radius: 6px; padding: 8px 0; overflow-x: auto; margin: 4px 0; }
 pre.fix div { padding: 0 12px; white-space: pre; }
@@ -149,3 +152,28 @@ pre.fix .hunk { color: var(--muted); }
 .msg.assistant { align-self: flex-start; background: var(--hover); }
 .msg .said { margin: 0 0 4px; white-space: pre-wrap; }
 .chat form textarea { width: auto; }
+
+/* Markdown in chat answers */
+.msg.assistant { max-width: 92%; }
+.md { font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 22px; }
+.md li { margin: 2px 0; } .md li > ul, .md li > ol { margin: 2px 0 0; }
+.md .md-h { margin: 12px 0 6px; font-size: 15px; }
+.md h5.md-h, .md h6.md-h { font-size: 14px; }
+.md blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+.md a { text-decoration: underline; }
+.md-inline { font-size: 12.5px; white-space: break-spaces; }
+.md-code { position: relative; font: 12.5px/1.5 ui-monospace, Menlo, monospace; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; overflow-x: auto; white-space: pre; }
+.md-code code { background: none; padding: 0; font: inherit; }
+.md-code.fix { padding: 8px 0; }
+.md-lang { position: absolute; top: 4px; right: 8px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.tok-keyword { color: var(--tok-keyword); } .tok-string { color: var(--tok-string); }
+.tok-number { color: var(--tok-number); } .tok-comment { color: var(--tok-comment); font-style: italic; }
+.tok-call { color: var(--tok-call); }
+.md-table { overflow-x: auto; margin: 0 0 8px; }
+.md-table table { display: table; font-size: 13px; }
+.md-table th, .md-table td { padding: 4px 8px; }
+.md-code { line-height: 20px; } .md-code.fix div { height: 20px; }

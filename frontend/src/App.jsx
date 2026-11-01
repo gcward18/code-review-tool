@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import Agents from "./Agents.jsx";
+import Markdown from "./Markdown.jsx";
 
 const THEMES = ["light", "dark", "dracula"];
 const ago = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "–");
@@ -190,6 +191,7 @@ function RangePicker({ repoPath, onStarted, onProject }) {
   if (error && !repo) return <div className="card error">{error}</div>;
   if (!repo) return <div className="card muted">Loading repository…</div>;
   return (
+    <>
     <div className="card">
       <div className="actions title">
         <h2 className="grow">
@@ -227,6 +229,8 @@ function RangePicker({ repoPath, onStarted, onProject }) {
       </p>
       {error && <p className="error">{error}</p>}
     </div>
+    {repo.project_id && <Chat projectId={repo.project_id} />}
+    </>
   );
 }
 
@@ -496,11 +500,8 @@ function Fix({ text }) {
   );
 }
 
-// Answers: plain text with ``` fenced blocks shown as code.
-function Message({ text }) {
-  return text.split(/```[a-z]*\n?/).map((part, i) =>
-    i % 2 ? <pre key={i} className="fix">{part.replace(/\n$/, "")}</pre>
-      : <p key={i} className="said">{part.trim()}</p>);
+function Message({ role, text }) {
+  return role === "user" ? <p className="said">{text}</p> : <Markdown text={text} />;
 }
 
 function Chat({ projectId }) {
@@ -551,7 +552,7 @@ function Chat({ projectId }) {
         )}
         {messages?.map((m, i) => (
           <div key={i} className={`msg ${m.role}`}>
-            <Message text={m.content} />
+            <Message role={m.role} text={m.content} />
             {m.role === "assistant" && (
               <span className="muted small">{m.model} · {m.input_tokens}/{m.output_tokens} tokens</span>
             )}

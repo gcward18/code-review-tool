@@ -35,6 +35,10 @@ class ChunkingTests(unittest.TestCase):
                           "guide.md > Logging"])
         self.assertIn("+=", pieces[0].text)
 
+    def test_documents_starting_below_level_one_keep_siblings_apart(self):
+        pieces = chunk("## A\n\none\n\n## B\n\ntwo\n\n### B1\n\nthree\n\n# C\n\nfour", title="d")
+        self.assertEqual([p.heading for p in pieces], ["d > A", "d > B", "d > B > B1", "d > C"])
+
     def test_long_sections_pack_to_size_with_overlap_and_keep_code_fences_whole(self):
         paragraphs = "\n\n".join(f"Paragraph {n} " + "word " * 60 for n in range(12))
         fence = "```python\n" + "\n".join(f"x{n} = {n}" for n in range(40)) + "\n```"
@@ -58,6 +62,51 @@ class ChunkingTests(unittest.TestCase):
         self.assertGreaterEqual(sum(len(p.text) for p in pieces), 20000)  # nothing lost; overlap adds
 
 
+def make_pdf(pages):
+    """A minimal valid PDF with one line of Helvetica text per page (or none)."""
+    objects = ["<< /Type /Catalog /Pages 2 0 R >>", None,
+               "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    kids = []
+    for text in pages:
+        stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET" if text else ""
+        objects.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                       f"/Resources << /Font << /F1 3 0 R >> >> /Contents {len(objects)} 0 R >>")
+        kids.append(f"{len(objects)} 0 R")
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>"
+    out, offsets = b"%PDF-1.4\n", []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n{body}\nendobj\n".encode()
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += "".join(f"{o:010d} 00000 n \n" for o in offsets).encode()
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+class PdfTests(unittest.TestCase):
+    def test_pdf_pages_become_sections_that_chunk_and_cite_by_page(self):
+        text = extract("handbook.pdf", make_pdf(["Accumulate totals with plus equals.",
+                                                 "Round currency with Decimal."]))
+        self.assertEqual(text.splitlines()[0], "## Page 1")
+        self.assertIn("Round currency with Decimal.", text)
+        pieces = chunk(text, title="handbook.pdf")
+        self.assertEqual([p.heading for p in pieces], ["handbook.pdf > Page 1", "handbook.pdf > Page 2"])
+
+    def test_image_only_corrupt_and_missing_pypdf_explain_themselves(self):
+        with self.assertRaises(KnowledgeError) as scanned:
+            extract("scan.pdf", make_pdf([""]))
+        self.assertIn("OCR", str(scanned.exception))
+        with self.assertRaises(KnowledgeError) as corrupt:
+            extract("bad.pdf", b"%PDF-1.4 not really")
+        self.assertIn("could not be read", str(corrupt.exception))
+        with patch.dict("sys.modules", {"pypdf": None}):
+            with self.assertRaises(KnowledgeError) as missing:
+                extract("a.pdf", make_pdf(["x"]))
+        self.assertIn(".[pdf]", str(missing.exception))
+
+
 class ExtractTests(unittest.TestCase):
     def test_html_docx_and_refusals(self):
         page = b"<html><head><style>x{}</style></head><body><h2>Setup</h2><p>Run it.</p><script>bad()</script></body></html>"
@@ -71,7 +120,7 @@ class ExtractTests(unittest.TestCase):
                              '<w:r><w:t>Title</w:t></w:r></w:p><w:p><w:r><w:t>Body &amp; more</w:t></w:r></w:p>'
                              '</w:body></w:document>')
         self.assertEqual(extract("spec.docx", buffer.getvalue()), "# Title\n\nBody & more")
-        for name, data in (("a.pdf", b"%PDF"), ("a.bin", b"\x00\x01\x02"), ("big.md", b"x" * 5_000_001)):
+        for name, data in (("a.bin", b"\x00\x01\x02"), ("big.md", b"x" * 20_000_001)):
             with self.assertRaises(KnowledgeError):
                 extract(name, data)
 

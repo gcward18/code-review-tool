@@ -14,6 +14,7 @@ git clone <this repository> autosde && cd autosde
 brew install gitleaks              # or set AUTOSDE_GITLEAKS=/path/to/gitleaks
 export OPENAI_API_KEY=...          # read from the environment, never stored
 pip install -e .                   # optional: adds the `autosde` command (or use `python3 -m autosde`)
+pip install -e '.[pdf]'            # optional: PDF uploads to knowledge bases (pypdf)
 autosde serve                      # open http://127.0.0.1:8765/
 ```
 
@@ -23,7 +24,7 @@ autosde serve                      # open http://127.0.0.1:8765/
 - **Home:** a chat about all your projects (branches, recent commits, file types and review history), next to your projects and recent reviews.
 - **Project page:** four panels. On the left, pick a commit range (**From** is the newer end, **To** lists only older commits) and chat about the project's review history. On the right, its reviews and, if enabled, the agents that ran. Drag the dividers to resize, and use ⤢ to make any panel full screen.
 - **Review page:** the plan with a checkbox per file and an estimated cost; after approval, findings with their diffs, and the findings the aggregator rejected and why.
-- **Knowledge:** create knowledge bases, upload documents (Markdown, text, code, HTML, JSON, CSV, .docx), inspect their chunks, tune the chunking and retrieval strategy, and test retrieval. See [docs/RAG.md](docs/RAG.md).
+- **Knowledge:** create knowledge bases, upload documents (PDF, Markdown, text, code, HTML, JSON, CSV, .docx), inspect their chunks, tune the chunking and retrieval strategy, and test retrieval. See [docs/RAG.md](docs/RAG.md).
 - **Agents:** enable specialists, set file extensions, pick each agent's model from those your key can use, edit every prompt, and see run statistics.
 - **Settings:** theme (Light, Dark, Dracula), blocked folders, and whether agent runs appear on project and review pages.
 

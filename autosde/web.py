@@ -495,7 +495,7 @@ def handler_for(app):
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 return self._json(415, {"error": "JSON required."})
             length = int(self.headers.get("Content-Length") or 0)
-            limit = 8_000_000 if self.path.endswith("/documents") else 100_000  # uploads
+            limit = 28_000_000 if self.path.endswith("/documents") else 100_000  # uploads
             if length > limit:
                 return self._json(413, {"error": "Too large."})
             try:

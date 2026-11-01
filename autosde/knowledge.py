@@ -22,11 +22,11 @@ import zipfile
 from array import array
 from dataclasses import dataclass
 
-MAX_BYTES = 5_000_000
+MAX_BYTES = 20_000_000
 DEFAULTS = {"chunk_tokens": 400, "overlap": 0.15, "top_k": 6, "context_tokens": 1500,
             "embed_model": "text-embedding-3-small", "dimensions": 512}
 TEXT_TYPES = {".txt", ".md", ".markdown", ".rst", ".adoc", ".json", ".csv", ".tsv", ".yaml",
-              ".yml", ".toml", ".ini", ".cfg", ".xml", ".html", ".htm", ".docx", ".log", ".sql",
+              ".yml", ".toml", ".ini", ".cfg", ".xml", ".html", ".htm", ".docx", ".pdf", ".log", ".sql",
               ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".cs", ".rb", ".rs", ".c",
               ".h", ".cpp", ".hpp", ".kt", ".swift", ".php", ".sh", ".tf", ".proto", ".graphql"}
 CODE_TYPES = {".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".cs", ".rb", ".rs", ".c",
@@ -89,13 +89,38 @@ def _docx(data):
     return "\n\n".join(paragraphs)
 
 
+def _pdf(data):
+    """Text per page via the optional pypdf extra; each page becomes a `## Page n` section."""
+    try:
+        from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
+    except ImportError:
+        raise KnowledgeError("PDF support needs pypdf: pip install -e '.[pdf]', then restart.") from None
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise KnowledgeError("That PDF is password-protected.")
+        pages = []
+        for number, page in enumerate(reader.pages, 1):
+            text = (page.extract_text() or "").strip()
+            if text:
+                pages.append(f"## Page {number}\n\n{text}")
+    except KnowledgeError:
+        raise
+    except (PdfReadError, ValueError, KeyError, TypeError, OSError):
+        raise KnowledgeError("That PDF could not be read.") from None
+    if not pages:
+        raise KnowledgeError("No text found in that PDF; scanned PDFs need OCR first.")
+    return "\n\n".join(pages)
+
+
 def extract(name, data):
     """Plain text from an uploaded file, or KnowledgeError with a readable reason."""
     if len(data) > MAX_BYTES:
-        raise KnowledgeError("Files must be under 5 MB.")
+        raise KnowledgeError("Files must be under 20 MB.")
     suffix = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
     if suffix == ".pdf":
-        raise KnowledgeError("PDF isn't supported yet; export it to text, Markdown or .docx.")
+        return _pdf(data)
     if suffix == ".docx":
         return _docx(data)
     if b"\x00" in data[:4096]:
@@ -187,14 +212,16 @@ def chunk(text, *, title, chunk_tokens=DEFAULTS["chunk_tokens"], overlap=DEFAULT
         heading = re.match(r"^(#{1,6})\s+(.+)", line) if not code else None
         if heading:
             if buffer:
-                sections.append((" > ".join(path), "\n".join(buffer)))
+                sections.append((" > ".join(t for _, t in path), "\n".join(buffer)))
                 buffer = []
             level = len(heading[1])
-            path = path[: level - 1] + [heading[2].strip()]
+            while path and path[-1][0] >= level:  # siblings and deeper headings close
+                path.pop()
+            path.append((level, heading[2].strip()))
         else:
             buffer.append(line)
     if buffer:
-        sections.append((" > ".join(path), "\n".join(buffer)))
+        sections.append((" > ".join(t for _, t in path), "\n".join(buffer)))
 
     # Code splits at definitions, which are whole units, so it carries no text overlap.
     chunks, carry_tokens = [], 0 if code else int(chunk_tokens * overlap)

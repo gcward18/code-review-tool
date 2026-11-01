@@ -3,7 +3,7 @@ import { api } from "./api.js";
 import Workspace, { Panel } from "./Workspace.jsx";
 
 const ACCEPT = ".txt,.md,.markdown,.rst,.adoc,.json,.csv,.tsv,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.htm,"
-  + ".docx,.log,.sql,.py,.js,.jsx,.ts,.tsx,.java,.go,.cs,.rb,.rs,.c,.h,.cpp,.hpp,.kt,.swift,.php,.sh,.tf,.proto,.graphql";
+  + ".docx,.pdf,.log,.sql,.py,.js,.jsx,.ts,.tsx,.java,.go,.cs,.rb,.rs,.c,.h,.cpp,.hpp,.kt,.swift,.php,.sh,.tf,.proto,.graphql";
 const size = (n) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 1e3 ? `${Math.round(n / 1e3)} KB` : `${n} B`);
 
 function toBase64(file) {
@@ -190,7 +190,7 @@ function Documents({ base, onChanged }) {
   const upload = async (files) => {
     setErrors([]);
     for (const file of files) {
-      if (file.size > 5e6) setErrors((list) => [...list, `${file.name}: over 5 MB.`]);
+      if (file.size > 20e6) setErrors((list) => [...list, `${file.name}: over 20 MB.`]);
       else await send(file.name, await toBase64(file));
     }
   };
@@ -236,7 +236,7 @@ function Documents({ base, onChanged }) {
         <div className="dropzone" onClick={() => input.current.click()}>
           <div className="empty-icon">📄</div>
           <b>Drop documents here, or click to choose files</b>
-          <span className="small muted">Markdown, text, code, HTML, JSON, CSV or .docx · up to 5 MB each · scanned by gitleaks before embedding</span>
+          <span className="small muted">PDF, Markdown, text, code, HTML, JSON, CSV or .docx · up to 20 MB each · scanned by gitleaks before embedding</span>
         </div>
       ) : docs.length > 0 && (
         <table className="kb-docs">

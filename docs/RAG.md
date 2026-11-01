@@ -21,9 +21,9 @@ agent call ─► build query ─► vector rank ┐                         │
 | Source code (`.py`, `.ts`, `.go`, `.java`, …) | read as UTF-8, chunked as code (below) |
 | HTML | tags stripped; `<h1>`–`<h6>` become Markdown headings; scripts, styles and navigation dropped |
 | `.docx` | paragraphs read from `word/document.xml`; Word heading styles become Markdown headings |
-| PDF | not supported yet (needs a parser dependency); export to text, Markdown or `.docx` |
+| PDF | text layer read with the optional [pypdf](https://pypi.org/project/pypdf/) extra (`pip install -e '.[pdf]'`); each page becomes a `## Page n` section, so passages cite their page. Password-protected PDFs and scanned image-only PDFs (which need OCR) are refused with a reason |
 
-Files are limited to 5 MB. Binary files are refused.
+Files are limited to 20 MB. Other binary files are refused.
 
 ## 2. Chunking: structure-aware, packed, with overlap
 
@@ -80,5 +80,5 @@ Prompts tell agents to apply the material, cite it as `[n]`, treat it as data ra
 
 - Search is brute force over the selected bases. That's fine up to tens of thousands of chunks at 512 dimensions; beyond that, add an approximate index (for example `sqlite-vec`).
 - No re-ranking model. A cross-encoder or an LLM re-rank of the fused top 20 would sharpen precision.
-- No PDF extraction without a dependency.
+- PDF extraction needs the optional `pdf` extra and reads the text layer only; scanned PDFs need OCR first.
 - Retrieved passages aren't yet recorded per agent run; LangSmith traces show them in the prompt.

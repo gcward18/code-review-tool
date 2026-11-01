@@ -8,6 +8,8 @@ dependencies = []
 [project.optional-dependencies]
 # Only for reading the OpenAI key from AWS Secrets Manager.
 aws = ["boto3"]
+# Only for extracting text from PDF uploads to knowledge bases.
+pdf = ["pypdf==6.20.1"]
 
 [project.scripts]
 autosde = "autosde.cli:main"

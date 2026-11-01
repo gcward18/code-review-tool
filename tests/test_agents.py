@@ -57,5 +57,32 @@ class AgentConfigTests(unittest.TestCase):
         self.assertFalse(json.loads((self.prompts / "agents.json").read_text())["agents"]["java"]["enabled"])
 
 
+class ModelListTests(unittest.TestCase):
+    def test_keeps_text_models_and_hides_the_key(self):
+        from autosde.llm import OpenAIModel
+
+        listing = {"data": [{"id": i} for i in ("gpt-6-luna", "gpt-4o-audio-preview",
+                                                 "text-embedding-3-small", "o3", "whisper-1")]}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return json.dumps(listing).encode()
+
+        model = OpenAIModel("gpt-6-luna", api_key="private-sentinel")
+        with patch.object(model._opener, "open", return_value=Response()) as opened:
+            self.assertEqual(model.models(), ["gpt-6-luna", "o3"])
+        self.assertEqual(opened.call_args[0][0].full_url, "https://api.openai.com/v1/models")
+        with patch.object(model._opener, "open", side_effect=OSError("private-sentinel")):
+            with self.assertRaises(RuntimeError) as error:
+                model.models()
+        self.assertNotIn("private-sentinel", str(error.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

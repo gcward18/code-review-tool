@@ -10,6 +10,10 @@ import urllib.request
 from dataclasses import dataclass
 
 API = "https://api.openai.com/v1/responses"
+MODELS_API = "https://api.openai.com/v1/models"
+# Model families that cannot answer a text Responses call.
+_NOT_TEXT = ("audio", "realtime", "tts", "transcribe", "image", "embedding", "search",
+             "moderation", "dall-e", "whisper", "sora", "live")
 
 
 @dataclass
@@ -86,6 +90,20 @@ class OpenAIModel:
 
     def __repr__(self):
         return f"OpenAIModel(model={self.model!r}, api_key=<redacted>)"
+
+    def models(self):
+        """Text model ids this key can use (a free listing call), newest names first."""
+        request = urllib.request.Request(MODELS_API,
+                                         headers={"Authorization": "Bearer " + self._key})
+        try:
+            with self._opener.open(request, timeout=15) as response:
+                data = json.loads(response.read(2_000_000))
+        except Exception:
+            raise RuntimeError("Model list unavailable") from None
+        ids = {m.get("id", "") for m in data.get("data") or []}
+        return sorted((i for i in ids if (i.startswith("gpt-") or i[:2] in ("o1", "o3", "o4"))
+                       and not any(word in i for word in _NOT_TEXT)),
+                      key=lambda i: (i.startswith("gpt-"), i), reverse=True)
 
     def complete(self, *, role, system, prompt, schema, max_output_tokens, model=None):
         body = {
@@ -166,6 +184,11 @@ class ScriptedModel:
     def __init__(self, script):
         self.script = {role: list(replies) for role, replies in script.items()}
         self.calls, self._lock = [], threading.Lock()
+
+    available = ("gpt-6-luna", "gpt-6-luna-mini")
+
+    def models(self):
+        return list(self.available)
 
     def complete(self, *, role, system, prompt, schema, max_output_tokens, model=None):
         with self._lock:

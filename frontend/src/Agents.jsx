@@ -17,10 +17,13 @@ export default function Agents({ defaultModel }) {
   const [status, setStatus] = useState({ kind: "", text: "" });
   const [newName, setNewName] = useState("");
   const [selected, setSelected] = useState("python");
+  const [models, setModels] = useState({});
+  const [custom, setCustom] = useState({});
 
   useEffect(() => {
     api.agents().then((data) => (setSaved(data), setDraft(clone(data))))
       .catch((e) => setStatus({ kind: "error", text: e.message }));
+    api.models().then(setModels).catch(() => setModels({ source: "unavailable" }));
   }, []);
 
   if (!draft) return <div className={`card ${status.kind || "muted"}`}>{status.text || "Loading…"}</div>;
@@ -57,13 +60,33 @@ export default function Agents({ defaultModel }) {
     setSelected(name);
   };
 
-  const modelField = (name) => (
-    <label className="field">
-      <span className="small muted">Model</span>
-      <input value={draft.config.agents[name].model || ""} placeholder={defaultModel || "default"}
-        onChange={(e) => agent(name, "model", e.target.value || null)} />
-    </label>
-  );
+  const modelField = (name) => {
+    const value = draft.config.agents[name].model || "";
+    const options = [...new Set([...(models.models || []), ...(value ? [value] : [])])];
+    const isCustom = custom[name] || (value && !options.includes(value));
+    return (
+      <label className="field">
+        <span className="small muted">Model</span>
+        <select value={isCustom ? "__custom" : value}
+          onChange={(e) => {
+            const next = e.target.value;
+            setCustom((c) => ({ ...c, [name]: next === "__custom" }));
+            if (next !== "__custom") agent(name, "model", next || null);
+          }}>
+          <option value="">Default ({defaultModel || "settings"})</option>
+          {options.map((m) => <option key={m} value={m}>{m}</option>)}
+          <option value="__custom">Other…</option>
+        </select>
+        {isCustom && (
+          <input value={value} placeholder="model id" autoFocus
+            onChange={(e) => agent(name, "model", e.target.value || null)} />
+        )}
+        {models.source === "unavailable" && (
+          <span className="small muted">Couldn't list models from OpenAI; choose Other… to type one.</span>
+        )}
+      </label>
+    );
+  };
 
   return (
     <>

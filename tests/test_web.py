@@ -160,6 +160,12 @@ class WebTests(unittest.TestCase):
             self.assertEqual(self.status(error), code, (options, body))
         self.assertEqual(self.store.reviews(), [])
 
+    def test_models_lists_the_keys_models(self):
+        models = self.get("/api/models")
+        self.assertEqual(models["source"], "openai")
+        self.assertIn("gpt-6-luna-mini", models["models"])
+        self.assertEqual(models["default"], self.settings.model)
+
     def test_frontend_is_served_with_a_strict_policy(self):
         with urllib.request.urlopen(self.url + "/", timeout=10) as response:
             self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])

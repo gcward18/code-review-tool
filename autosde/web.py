@@ -36,6 +36,16 @@ class App:
         # Plans awaiting approval; their file contents exist only here, in memory.
         self.pending, self._lock = {}, threading.Lock()
         self.planning = set()  # ids this process is still planning
+        self._models = None  # cached model list; fetched once per start
+
+    def models(self):
+        """Models for the Agents page: the key's text models, or what is configured."""
+        if self._models is None:
+            try:
+                self._models = {"models": self.model_factory().models(), "source": "openai"}
+            except Exception:
+                return {"default": self.settings.model, "models": [], "source": "unavailable"}
+        return {"default": self.settings.model, **self._models}
 
     # --- folders and refs ---------------------------------------------------
 
@@ -278,6 +288,8 @@ def handler_for(app):
                     return self._json(200, app.repo(query.get("path")))
                 if path == "/api/older":
                     return self._json(200, app.older(query.get("path"), query.get("from", "")))
+                if path == "/api/models":
+                    return self._json(200, app.models())
                 if path == "/api/agents":
                     return self._json(200, agents.snapshot())
                 if path == "/api/projects":

@@ -35,6 +35,7 @@ export const api = {
   approve: (id, files) =>
     call(`/api/reviews/${id}/approve`, { method: "POST", body: JSON.stringify({ files }) }),
   agents: () => call("/api/agents"),
+  models: () => call("/api/models"),
   saveAgents: (draft) => call("/api/agents", { method: "POST", body: JSON.stringify(draft) }),
   cancel: (id) => call(`/api/reviews/${id}/cancel`, { method: "POST", body: "{}" }),
 };

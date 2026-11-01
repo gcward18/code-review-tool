@@ -23,6 +23,7 @@ autosde serve                      # open http://127.0.0.1:8765/
 - **Home:** a chat about all your projects (branches, recent commits, file types and review history), next to your projects and recent reviews.
 - **Project page:** four panels. On the left, pick a commit range (**From** is the newer end, **To** lists only older commits) and chat about the project's review history. On the right, its reviews and, if enabled, the agents that ran. Drag the dividers to resize, and use ⤢ to make any panel full screen.
 - **Review page:** the plan with a checkbox per file and an estimated cost; after approval, findings with their diffs, and the findings the aggregator rejected and why.
+- **Knowledge:** create knowledge bases, upload documents (Markdown, text, code, HTML, JSON, CSV, .docx), inspect their chunks, tune the chunking and retrieval strategy, and test retrieval. See [docs/RAG.md](docs/RAG.md).
 - **Agents:** enable specialists, set file extensions, pick each agent's model from those your key can use, edit every prompt, and see run statistics.
 - **Settings:** theme (Light, Dark, Dracula), blocked folders, and whether agent runs appear on project and review pages.
 
@@ -57,13 +58,17 @@ autosde agents calculator                       # which agents ran against a pro
 
 Agent settings (enabled specialists, extensions, models, tracing) are saved in `autosde/prompts/agents.json`, next to the prompts.
 
+## Knowledge bases (RAG)
+
+Attach knowledge bases to agents on the Agents page, and each specialist receives the passages most relevant to its changed lines, and the chat agent the passages relevant to your question. Documents are gitleaks-scanned, chunked by structure (headings, paragraphs, code definitions) with overlap, embedded with `text-embedding-3-small` at 512 dimensions, and stored in the local database. Retrieval is hybrid: vector similarity and BM25 keyword search fused with reciprocal rank fusion. The full strategy is in [docs/RAG.md](docs/RAG.md).
+
 ## LangSmith tracing
 
 Turn it on from the Agents page and export `LANGSMITH_API_KEY` before starting AutoSDE. Each review becomes one trace with a child run per agent call, containing the full prompt, the reviewed code and the reply. Untick "Trace this agent" to leave an agent out. Text gitleaks flags is withheld.
 
 ## Data
 
-The database stores projects, reviews (range, status, tokens, cost), one row per agent call (agent, model, files, status, time, tokens), findings (file, lines, severity, title, description, fix, kept or rejected) and chat history. Query it with the CLI, the web app, the notebook, or `sqlite3 ~/.autosde/autosde.db`.
+The database stores projects, reviews (range, status, tokens, cost), one row per agent call (agent, model, files, status, time, tokens), findings (file, lines, severity, title, description, fix, kept or rejected), chat history, and knowledge base documents with their chunks and embeddings. Query it with the CLI, the web app, the notebook, or `sqlite3 ~/.autosde/autosde.db`.
 
 ## Developing
 

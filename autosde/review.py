@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from autosde import git, tracing
+from autosde.knowledge import Knowledge
 from autosde.scan import ScanUnavailable, scanner
 from autosde.team import Team, TeamResult
 
@@ -23,6 +24,14 @@ class Pending:
     def estimate(self, selection=None):
         selection = self.result.default_selection() if selection is None else set(selection)
         return self.team.estimate(self.result, self.changes.files, selection)
+
+
+def retriever_for(store, model, scan):
+    """Hybrid knowledge base search, embedding queries with the review's model client."""
+    if not hasattr(model, "embed"):
+        return None
+    knowledge = Knowledge(store.db, embed=model.embed, scan=scan)
+    return lambda kb_ids, query: knowledge.search(kb_ids, query)
 
 
 def prepare(repo, range_spec, *, store, model, settings, scan=None, on_start=None):
@@ -55,7 +64,7 @@ def prepare(repo, range_spec, *, store, model, settings, scan=None, on_start=Non
                 item.head = ""
         model = tracing.traced(model, review_id=review_id, scan=scan,
                                name=f"{changes.name} {range_spec} (review {review_id})")
-        team = Team(model)
+        team = Team(model, retriever=retriever_for(store, model, scan))
         result = team.plan(changes.files)
         store.save_plan(review_id, result, changes.files, input_price=settings.input_price,
                         output_price=settings.output_price)

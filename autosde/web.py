@@ -4,6 +4,8 @@ Binds 127.0.0.1 only. Every POST must be same-origin JSON carrying the
 per-start token, so other websites cannot trigger paid reviews.
 """
 
+import base64
+import binascii
 import json
 import mimetypes
 import os
@@ -16,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from autosde import agents, chat, git, report
+from autosde.knowledge import Knowledge, KnowledgeError
 from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, approve, cancel, prepare
 from autosde.scan import ScanUnavailable, scanner
@@ -328,6 +331,68 @@ class App:
             raise ApiError(503, "The model is not configured (OpenAI key missing).") from None
 
 
+    # --- knowledge bases ---------------------------------------------------
+
+    def _knowledge(self):
+        """Knowledge store embedding through the configured model client."""
+        def embed(texts, model, dimensions):
+            try:
+                client = self.model_factory()
+            except RuntimeError:
+                raise RuntimeError("OpenAI key missing") from None
+            return client.embed(texts, model, dimensions)
+        try:
+            scan = scanner(self.settings.gitleaks)
+        except ScanUnavailable as error:
+            raise ApiError(400, str(error)) from None
+        return Knowledge(self.store.db, embed=embed, scan=scan)
+
+    def knowledge(self, method, parts, body):
+        kb = self._knowledge()
+        try:
+            if method == "GET" and not parts:
+                return kb.bases()
+            if method == "POST" and not parts:
+                return kb.create(body.get("name"), body.get("description", ""), body.get("settings"))
+            if method == "POST" and parts == ["search"]:
+                ids = body.get("kb_ids") or []
+                if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+                    raise KnowledgeError("kb_ids must be a list of ids.")
+                top_k = body.get("top_k")
+                return {"results": kb.search(ids, str(body.get("query") or "")[:4000],
+                                             top_k=top_k if isinstance(top_k, int) and 0 < top_k <= 20 else None)}
+            if parts[:1] == ["documents"] and len(parts) >= 2 and parts[1].isdigit():
+                doc_id = int(parts[1])
+                if method == "GET" and parts[2:] == ["chunks"]:
+                    return {"chunks": kb.chunks(doc_id)}
+                if method == "POST" and parts[2:] == ["delete"]:
+                    kb.delete_document(doc_id)
+                    return {"ok": True}
+            if parts and parts[0].isdigit():
+                kb_id, rest = int(parts[0]), parts[1:]
+                if method == "GET" and not rest:
+                    return kb.base(kb_id)
+                if method == "POST" and not rest:
+                    return kb.update(kb_id, description=body.get("description"),
+                                     settings=body.get("settings"))
+                if method == "POST" and rest == ["delete"]:
+                    kb.delete(kb_id)
+                    return {"ok": True}
+                if method == "POST" and rest == ["documents"]:
+                    try:
+                        data = base64.b64decode(body.get("data") or "", validate=True)
+                    except (binascii.Error, ValueError):
+                        raise KnowledgeError("Upload data must be base64.") from None
+                    doc_id = kb.add_document(kb_id, body.get("name"), data)
+                    threading.Thread(target=kb.ingest, args=(doc_id, data), daemon=True).start()
+                    return {"id": doc_id, "status": "processing"}
+        except KnowledgeError as error:
+            raise ApiError(400, str(error)) from None
+        except RuntimeError:
+            raise ApiError(503, "Embedding needs an OpenAI key (OPENAI_API_KEY).") from None
+        raise ApiError(404, "Not found.")
+
+
 def handler_for(app):
     class Handler(BaseHTTPRequestHandler):
         server_version = "AutoSDE"
@@ -397,6 +462,9 @@ def handler_for(app):
                     return self._json(200, agents.snapshot())
                 if path == "/api/chat":
                     return self._json(200, {"messages": app.store.chat(None)})
+                if path == "/api/knowledge" or path.startswith("/api/knowledge/"):
+                    parts = [p for p in path[len("/api/knowledge"):].split("/") if p]
+                    return self._json(200, app.knowledge("GET", parts, {}))
                 if path == "/api/agent-runs":
                     return self._json(200, app.store.agents())
                 if path == "/api/projects":
@@ -427,7 +495,8 @@ def handler_for(app):
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 return self._json(415, {"error": "JSON required."})
             length = int(self.headers.get("Content-Length") or 0)
-            if length > 100_000:
+            limit = 8_000_000 if self.path.endswith("/documents") else 100_000  # uploads
+            if length > limit:
                 return self._json(413, {"error": "Too large."})
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
@@ -440,6 +509,9 @@ def handler_for(app):
                     return self._json(202, app.submit(body))
                 if self.path == "/api/chat":
                     return self._json(200, app.chat(None, body))
+                if self.path == "/api/knowledge" or self.path.startswith("/api/knowledge/"):
+                    parts = [p for p in self.path[len("/api/knowledge"):].split("/") if p]
+                    return self._json(200, app.knowledge("POST", parts, body))
                 if self.path == "/api/chat/clear":
                     app.store.clear_chat(None)
                     return self._json(200, {"messages": []})

@@ -60,6 +60,11 @@ def validate(config):
             raise ConfigError(f"Invalid agent entry: {name!r}")
         entry = clean["agents"].setdefault(name, {"enabled": True, "extensions": [], "model": None,
                                                          "trace": True})
+        if "knowledge" in item:
+            ids = item["knowledge"]
+            if not isinstance(ids, list) or len(ids) > 20 or any(type(i) is not int or i < 1 for i in ids):
+                raise ConfigError(f"{name}: knowledge must be a list of knowledge base ids.")
+            entry["knowledge"] = sorted(set(ids))
         if "trace" in item:
             if not isinstance(item["trace"], bool):
                 raise ConfigError(f"{name}: trace must be true or false.")

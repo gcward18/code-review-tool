@@ -263,3 +263,18 @@ th { font: 600 10.5px var(--font-code); letter-spacing: .1em; color: var(--muted
 pre.fix, .md-code.fix { background: var(--surface); }
 .msg.user { background: var(--accent); color: var(--accent-text); }
 .msg.assistant { background: var(--surface); border: 1px solid var(--line); }
+
+/* Knowledge page */
+.kb-list { margin-bottom: 12px; }
+.kb-create { display: flex; flex-direction: column; gap: 8px; }
+.kb-h { font: 600 11px var(--font-code); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 14px 0 6px; }
+.kb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.kb-scope { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 8px; }
+.dropzone { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; padding: 18px;
+  border: 2px dashed var(--line); border-radius: 12px; cursor: pointer; margin-bottom: 10px; }
+.dropzone:hover, .dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+.chunks { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow: auto; }
+.chunk { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; background: var(--surface); }
+.chunk pre { white-space: pre-wrap; margin: 6px 0 0; font: 12.5px/1.5 var(--font-code); max-height: 220px; overflow: auto; }
+button.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 40%, transparent); }
+.status-failed { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); }

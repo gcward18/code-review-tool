@@ -21,12 +21,14 @@ export default function Agents({ defaultModel }) {
   const [models, setModels] = useState({});
   const [custom, setCustom] = useState({});
   const [runs, setRuns] = useState(null);
+  const [bases, setBases] = useState([]);
 
   useEffect(() => {
     api.agents().then((data) => (setSaved(data), setDraft(clone(data))))
       .catch((e) => setStatus({ kind: "error", text: e.message }));
     api.models().then(setModels).catch(() => setModels({ source: "unavailable" }));
     api.agentRuns().then(setRuns).catch(() => setRuns([]));
+    api.knowledge().then(setBases).catch(() => setBases([]));
   }, []);
 
   if (!draft) return <div className={`card ${status.kind || "muted"}`}>{status.text || "Loading…"}</div>;
@@ -156,6 +158,26 @@ export default function Agents({ defaultModel }) {
                   onChange={(e) => agent(name, "trace", e.target.checked)} />
                 Trace this agent to LangSmith
               </label>
+              {(!core || name === "chat") && (
+                <div className="field">
+                  <span className="small muted">Knowledge bases</span>
+                  {bases.length === 0 ? (
+                    <span className="small muted">None yet; create them on the Knowledge page.</span>
+                  ) : (
+                    <div className="kb-scope">
+                      {bases.map((b) => (
+                        <label key={b.id} className="toggle small">
+                          <input type="checkbox" checked={(item.knowledge || []).includes(b.id)}
+                            onChange={(e) => agent(name, "knowledge", e.target.checked
+                              ? [...(item.knowledge || []), b.id]
+                              : (item.knowledge || []).filter((i) => i !== b.id))} />
+                          {b.name}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {!core && (
                 <label className="field">
                   <span className="small muted">Focus</span>

@@ -7,6 +7,7 @@ quote) plus the recent conversation. The whole outbound prompt is gitleaks-scann
 import json
 
 from autosde.agents import load_config, read_prompt
+from autosde.knowledge import Knowledge
 
 ANSWER_SCHEMA = {
     "type": "object",
@@ -68,6 +69,15 @@ def ask(store, model, project, question, *, scan, config=None, repositories=None
         if project else
         {"scope": "all projects", "projects": _all_projects(store, repositories or [])}
     )
+    kb_ids = config["agents"].get("chat", {}).get("knowledge") or []
+    if kb_ids and hasattr(model, "embed"):
+        try:
+            found = Knowledge(store.db, embed=model.embed, scan=scan).search(kb_ids, question)
+            context["reference"] = [
+                {"n": n, "source": f"{r['knowledge_base']}/{r['document']}",
+                 "heading": r["heading"], "text": r["text"]} for n, r in enumerate(found, 1)]
+        except Exception:
+            pass  # answer without reference material
     payload = json.dumps({
         **context,
         "conversation": [{"role": t["role"], "content": t["content"]} for t in turns],

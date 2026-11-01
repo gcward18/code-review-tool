@@ -28,6 +28,19 @@ export const api = {
   ask: (id, message) =>
     call(`/api/projects/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }),
   clearChat: (id) => call(`/api/projects/${id}/chat/clear`, { method: "POST", body: "{}" }),
+  knowledge: () => call("/api/knowledge"),
+  knowledgeBase: (id) => call(`/api/knowledge/${id}`),
+  createKnowledge: (name, description) =>
+    call("/api/knowledge", { method: "POST", body: JSON.stringify({ name, description }) }),
+  updateKnowledge: (id, change) =>
+    call(`/api/knowledge/${id}`, { method: "POST", body: JSON.stringify(change) }),
+  deleteKnowledge: (id) => call(`/api/knowledge/${id}/delete`, { method: "POST", body: "{}" }),
+  uploadDocument: (id, name, data) =>
+    call(`/api/knowledge/${id}/documents`, { method: "POST", body: JSON.stringify({ name, data }) }),
+  documentChunks: (doc) => call(`/api/knowledge/documents/${doc}/chunks`),
+  deleteDocument: (doc) => call(`/api/knowledge/documents/${doc}/delete`, { method: "POST", body: "{}" }),
+  searchKnowledge: (kb_ids, query) =>
+    call("/api/knowledge/search", { method: "POST", body: JSON.stringify({ kb_ids, query }) }),
   workspaces: () => call("/api/workspaces"),
   tree: (path) => call(`/api/tree?${q(path ? { path } : {})}`),
   repo: (path) => call(`/api/repo?${q({ path })}`),

@@ -1,5 +1,6 @@
 """Model clients: OpenAI Responses API, and a scripted stand-in for tests and notebooks."""
 
+import hashlib
 import json
 import re
 import os
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 
 API = "https://api.openai.com/v1/responses"
 MODELS_API = "https://api.openai.com/v1/models"
+EMBEDDINGS_API = "https://api.openai.com/v1/embeddings"
 # Model families that cannot answer a text Responses call.
 _NOT_TEXT = ("audio", "realtime", "tts", "transcribe", "image", "embedding", "search",
              "moderation", "dall-e", "whisper", "sora", "live")
@@ -99,6 +101,24 @@ class OpenAIModel:
 
     def __repr__(self):
         return f"OpenAIModel(model={self.model!r}, api_key=<redacted>)"
+
+    def embed(self, texts, model, dimensions=None):
+        """(vectors, tokens) for `texts` in input order; one attempt, no retries."""
+        body = {"model": model, "input": list(texts)}
+        if dimensions:
+            body["dimensions"] = dimensions
+        request = urllib.request.Request(
+            EMBEDDINGS_API, data=json.dumps(body).encode(), method="POST",
+            headers={"Authorization": "Bearer " + self._key, "Content-Type": "application/json"})
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                data = json.loads(response.read(50_000_000))
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Embedding request failed (HTTP {error.code})") from None
+        except Exception as error:
+            raise RuntimeError(f"Embedding request failed ({type(error).__name__})") from None
+        rows = sorted(data.get("data") or [], key=lambda row: row["index"])
+        return [row["embedding"] for row in rows], int((data.get("usage") or {}).get("total_tokens") or 0)
 
     def models(self):
         """Text model ids this key can use (a free listing call), newest names first."""
@@ -195,6 +215,19 @@ class ScriptedModel:
         self.calls, self._lock = [], threading.Lock()
 
     available = ("gpt-6-luna", "gpt-6-luna-mini")
+
+    def embed(self, texts, model, dimensions=None):
+        """Deterministic bag-of-words vectors: shared words mean similar vectors."""
+        size = dimensions or 64
+        vectors = []
+        for text in texts:
+            vector = [0.0] * size
+            for word in re.findall(r"[a-z0-9_]{2,}", text.lower()):
+                vector[int(hashlib.sha256(word.encode()).hexdigest(), 16) % size] += 1.0
+            vectors.append(vector)
+        with self._lock:
+            self.embedded = getattr(self, "embedded", 0) + len(texts)
+        return vectors, sum(len(t) // 4 for t in texts)
 
     def models(self):
         return list(self.available)

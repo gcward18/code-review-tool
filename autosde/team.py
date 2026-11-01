@@ -8,6 +8,7 @@ from pathlib import Path
 
 from autosde import agents
 from autosde.agents import SPECIALISTS, load_config, specialists
+from autosde.knowledge import context_block
 from autosde.noise import flag
 
 PROMPTS = Path(__file__).parent / "prompts"
@@ -202,8 +203,9 @@ class TeamResult:
 
 
 class Team:
-    def __init__(self, model, *, workers=4, config=None):
-        self.model, self.workers = model, workers
+    def __init__(self, model, *, workers=4, config=None, retriever=None):
+        # retriever(kb_ids, query) -> ranked chunks; None disables knowledge bases.
+        self.model, self.workers, self.retriever = model, workers, retriever
         self._fixed = config  # tests pass one; otherwise agents.json is re-read per review
         self.config = config or load_config()
 
@@ -262,6 +264,19 @@ class Team:
         result.plan = plan
         return plan
 
+    def _reference(self, agent, files):
+        """Knowledge base context for an agent: searched with its files' changed lines."""
+        kb_ids = self.config["agents"].get(agent, {}).get("knowledge") or []
+        if not kb_ids or self.retriever is None:
+            return ""
+        changed = "\n".join(line[1:] for f in files for line in f.diff.splitlines()
+                            if line[:1] in "+-" and not line.startswith(("+++", "---")))
+        query = " ".join(f.path for f in files) + "\n" + changed[:4000]
+        try:
+            return context_block(self.retriever(kb_ids, query))
+        except Exception:
+            return ""  # retrieval never blocks a review
+
     def _review(self, agent, assignment, by_path, result):
         files = [by_path[p] for p in assignment["files"]]
         call = Call(role="specialist", agent=agent, files=[f.path for f in files],
@@ -275,6 +290,9 @@ class Team:
             f"=== {f.path} (head) ===\n{numbered(f.head)}\n=== {f.path} (diff) ===\n{f.diff}"
             for f in files
         )
+        reference = self._reference(agent, files)
+        if reference:
+            body = reference + "\n\n" + body
         data = self._ask(call, prompt("specialist.md", agent=agent, focus=focus or "general correctness"),
                          body, FINDINGS_SCHEMA, 4000)
         findings = []

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import Agents from "./Agents.jsx";
+import Knowledge from "./Knowledge.jsx";
 import Markdown from "./Markdown.jsx";
 import Workspace, { Panel } from "./Workspace.jsx";
 
@@ -613,6 +614,7 @@ function Crumbs({ view, canGoBack, onBack, go }) {
   if (view.kind === "review") trail.push({ label: `Review #${view.id}` });
   if (view.kind === "agents") trail.push({ label: "Agents" });
   if (view.kind === "settings") trail.push({ label: "Settings" });
+  if (view.kind === "knowledge") trail.push({ label: "Knowledge" });
   return (
     <nav className="crumbs">
       <button className="secondary" onClick={onBack} disabled={!canGoBack} aria-label="Back">←</button>
@@ -670,6 +672,8 @@ export default function App() {
         <span className="grow" />
         <a href="#" className={view.kind === "agents" ? "active" : ""}
           onClick={(e) => (e.preventDefault(), go({ kind: "agents" }))}>Agents</a>
+        <a href="#" className={view.kind === "knowledge" ? "active" : ""}
+          onClick={(e) => (e.preventDefault(), go({ kind: "knowledge" }))}>Knowledge</a>
         <a href="#" className={view.kind === "settings" ? "active" : ""}
           onClick={(e) => (e.preventDefault(), go({ kind: "settings" }))}>Settings</a>
       </header>
@@ -691,6 +695,7 @@ export default function App() {
         {view.kind === "review" && (
           <Review key={view.id} id={view.id} onContext={context} showAgents={prefs.showAgents} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
         )}
+        {session && view.kind === "knowledge" && <Knowledge />}
         {view.kind === "settings" && (
           <Settings theme={theme} setTheme={setTheme} prefs={prefs} setPrefs={setPrefs}
             onRescan={() => setScan((n) => n + 1)} />

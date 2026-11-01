@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     error TEXT,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
-    seconds REAL DEFAULT 0
+    seconds REAL DEFAULT 0,
+    model TEXT                      -- the model this call actually used
 );
 CREATE TABLE IF NOT EXISTS findings (
     id INTEGER PRIMARY KEY,
@@ -90,6 +91,9 @@ class Store:
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.execute("PRAGMA journal_mode = WAL") if str(path) != ":memory:" else None
         self.db.executescript(SCHEMA)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(agent_runs)")}
+        if "model" not in columns:  # databases created before per-run models
+            self.db.execute("ALTER TABLE agent_runs ADD COLUMN model TEXT")
 
     def _all(self, sql, *args):
         return [dict(row) for row in self.db.execute(sql, args)]
@@ -115,9 +119,9 @@ class Store:
                 continue
             self.db.execute(
                 "INSERT INTO agent_runs(review_id, role, agent, files, focus, status, error,"
-                " input_tokens, output_tokens, seconds) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " input_tokens, output_tokens, seconds, model) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (review_id, c.role, c.agent, "\n".join(c.files), c.focus, c.status, c.error,
-                 c.input_tokens, c.output_tokens, round(c.seconds, 3)),
+                 c.input_tokens, c.output_tokens, round(c.seconds, 3), c.model),
             )
             c.stored = True
 

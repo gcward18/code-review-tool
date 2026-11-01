@@ -158,6 +158,7 @@ class Call:
     seconds: float = 0.0
     error: str | None = None
     focus: str = ""
+    model: str | None = None  # the model this call used (override or default)
     stored: bool = False  # already written to the database (planning step)
 
 
@@ -208,6 +209,7 @@ class Team:
 
     def _ask(self, call, system, text, schema, limit):
         override = self.config["agents"].get(call.agent, {}).get("model")
+        call.model = override or getattr(self.model, "model", None)
         reply = self.model.complete(
             role=call.agent, system=system, prompt=text, schema=schema, max_output_tokens=limit,
             model=override,

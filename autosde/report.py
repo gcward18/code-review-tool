@@ -55,7 +55,8 @@ def text(review):
         detail = f" ({run['error']})" if run["error"] else ""
         files = run["files"].replace("\n", ", ")
         lines.append(
-            f"  {run['role']:<11} {run['agent']:<11} {run['status']:<6} {run['seconds']:>5.1f}s"
+            f"  {run['role']:<11} {run['agent']:<11} {run.get('model') or '-':<14} {run['status']:<6}"
+            f" {run['seconds']:>5.1f}s"
             f"  {files}{detail}"
         )
     kept = [f for f in review["findings"] if f["kept"]]

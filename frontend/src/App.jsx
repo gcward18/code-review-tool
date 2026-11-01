@@ -350,13 +350,14 @@ function Review({ id, onProject }) {
           <h3>Agents</h3>
           <table>
             <thead>
-              <tr><th>Role</th><th>Agent</th><th>Status</th><th>Files</th><th>Time</th><th>Tokens</th></tr>
+              <tr><th>Role</th><th>Agent</th><th>Model</th><th>Status</th><th>Files</th><th>Time</th><th>Tokens</th></tr>
             </thead>
             <tbody>
               {review.agent_runs.map((a) => (
                 <tr key={a.id}>
                   <td>{a.role}</td>
                   <td>{a.agent}</td>
+                  <td className="small">{a.model || "–"}</td>
                   <td className={a.status === "ok" ? "ok" : "error"}>{a.status}{a.error ? ` (${a.error})` : ""}</td>
                   <td className="small">{a.files.split("\n").join(", ")}</td>
                   <td>{a.seconds.toFixed(1)}s</td>

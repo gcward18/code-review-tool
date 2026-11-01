@@ -44,6 +44,9 @@ class AgentConfigTests(unittest.TestCase):
         models = {c["role"]: c["model"] for c in model.calls}
         self.assertEqual(models["aggregator"], "gpt-6-luna-mini")
         self.assertIsNone(models["coordinator"])
+        used = {c.agent: c.model for c in result.calls}
+        self.assertEqual(used, {"coordinator": "scripted", "general": "scripted",
+                                "aggregator": "gpt-6-luna-mini"})
 
     def test_update_is_all_or_nothing(self):
         before = agents.snapshot()
@@ -55,6 +58,25 @@ class AgentConfigTests(unittest.TestCase):
         self.assertEqual(after["prompts"]["coordinator"], "new text\n")
         self.assertEqual(after["focus"]["go"], "goroutines\n")
         self.assertFalse(json.loads((self.prompts / "agents.json").read_text())["agents"]["java"]["enabled"])
+
+
+class RunModelTests(unittest.TestCase):
+    def test_old_databases_gain_the_model_column(self):
+        import sqlite3
+
+        from autosde.db import Store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "old.db"
+            old = sqlite3.connect(path)
+            old.execute("CREATE TABLE agent_runs (id INTEGER PRIMARY KEY, review_id INTEGER,"
+                        " role TEXT, agent TEXT, files TEXT, focus TEXT, status TEXT, error TEXT,"
+                        " input_tokens INTEGER, output_tokens INTEGER, seconds REAL)")
+            old.close()
+            store = Store(path)
+            columns = {r[1] for r in store.db.execute("PRAGMA table_info(agent_runs)")}
+            self.assertIn("model", columns)
+            store.db.close()
 
 
 class ReasoningTests(unittest.TestCase):

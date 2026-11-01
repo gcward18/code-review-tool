@@ -68,7 +68,7 @@ class OpenAIModel:
         reasoning_effort="low",
         timeout=120,
         secret_id=None,  # e.g. "autosde/openai-api-key"; None = no AWS lookup
-        aws_profile=None,  # e.g. "ik_lab"
+        aws_profile=None,  # e.g. "dev"
         aws_region="us-east-1",
     ):
         self.model, self.reasoning_effort, self.timeout = model, reasoning_effort, timeout

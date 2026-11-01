@@ -42,7 +42,8 @@ def load_settings():
         reasoning_effort=None if effort == "none" else effort,
         db_path=Path(os.environ.get("AUTOSDE_DB", HOME / "autosde.db")),
         gitleaks=gitleaks_path(),
-        secret_id=os.environ.get("AUTOSDE_SECRET_ID", "autosde/openai-api-key"),
-        aws_profile=os.environ.get("AUTOSDE_SECRET_PROFILE", "ik_lab"),
+        # Opt-in: set AUTOSDE_SECRET_ID (and a profile) to read the key from Secrets Manager.
+        secret_id=os.environ.get("AUTOSDE_SECRET_ID") or None,
+        aws_profile=os.environ.get("AUTOSDE_SECRET_PROFILE") or None,
         aws_region=os.environ.get("AUTOSDE_SECRET_REGION", "us-east-1"),
     )

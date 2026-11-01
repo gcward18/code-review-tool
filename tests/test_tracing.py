@@ -11,7 +11,7 @@ from autosde.llm import ScriptedModel
 from autosde.review import run_review
 from helpers import FINDING, HEAD, PLAN, findings, repository, settings, verdict
 
-KEY = "lsv2_private-sentinel-key"
+KEY = "lsv2_private-sentinel-key"  # gitleaks:allow (fake test key)
 
 
 class FakeLangSmith:

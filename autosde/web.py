@@ -341,10 +341,8 @@ class App:
             except RuntimeError:
                 raise RuntimeError("OpenAI key missing") from None
             return client.embed(texts, model, dimensions)
-        try:
-            scan = scanner(self.settings.gitleaks)
-        except ScanUnavailable as error:
-            raise ApiError(400, str(error)) from None
+        def scan(text):  # gitleaks is only needed when a document is embedded
+            return scanner(self.settings.gitleaks)(text)
         return Knowledge(self.store.db, embed=embed, scan=scan)
 
     def knowledge(self, method, parts, body):

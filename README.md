@@ -27,6 +27,8 @@ autosde serve                      # open http://127.0.0.1:8765/
 - **Agents:** enable specialists, set file extensions, pick each agent's model from those your key can use, edit every prompt, and see run statistics.
 - **Settings:** theme (Light, Dark, Dracula), blocked folders, and whether agent runs appear on project and review pages.
 
+Pages and selections have bookmarkable URLs: `#/agents/python`, `#/knowledge/1`, `#/settings`, `#/review/3`, and `#/project/1`. Repository pages use `#/repo?path=…` with a URL-encoded absolute path. Copy the address bar to reopen the same view; refresh and browser Back/Forward preserve navigation. Home project names and review numbers are links you can open in another tab. These links refer to data on this local AutoSDE instance.
+
 Only committed history is reviewed; uncommitted edits are ignored.
 
 ## The command line

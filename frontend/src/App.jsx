@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import useRoute from "./useRoute.js";
+import { routeHref } from "./routes.js";
 import { api } from "./api.js";
 import Agents from "./Agents.jsx";
 import Knowledge from "./Knowledge.jsx";
@@ -339,13 +341,17 @@ function Plan({ review, onDecided }) {
 function Review({ id, onProject, onContext, showAgents }) {
   const [review, setReview] = useState(null);
   const [error, setError] = useState("");
+  const active = useRef(true);
   const load = useCallback(() => api.review(id).then((r) => {
+    if (!active.current) return;
     setReview(r);
     onContext({ repo: r.project_path });
-  }).catch((e) => setError(e.message)), [id]);
+  }).catch((e) => active.current && setError(e.message)), [id, onContext]);
 
   useEffect(() => {
+    active.current = true;
     load();
+    return () => { active.current = false; };
   }, [load]);
   useEffect(() => {
     if (!review || !["planning", "running"].includes(review.status)) return;
@@ -362,7 +368,7 @@ function Review({ id, onProject, onContext, showAgents }) {
       <div className="card">
         <h2>
           Review #{review.id} ·{" "}
-          <a href="#" onClick={(e) => (e.preventDefault(), onProject(review.project_id))}>
+          <a href={routeHref({ kind: "project", id: review.project_id })}>
             {review.project}
           </a>
         </h2>
@@ -449,7 +455,7 @@ function ReviewTable({ reviews, onOpen }) {
       <tbody>
         {reviews.map((r) => (
           <tr key={r.id} className="clickable" onClick={() => onOpen(r.id)}>
-            <td>{r.id}</td>
+            <td><a href={routeHref({ kind: "review", id: r.id })} onClick={(e) => e.stopPropagation()}>{r.id}</a></td>
             <td>{r.project}</td>
             <td><code>{r.base_sha.slice(0, 7)}..{r.head_sha.slice(0, 7)}</code></td>
             <td className="small">{ago(r.started_at)}</td>
@@ -477,7 +483,7 @@ function Home({ onOpen, onProject }) {
       <tbody>
         {projects.map((p) => (
           <tr key={p.id} className="clickable" onClick={() => onProject(p.id)}>
-            <td>{p.name}</td><td>{p.reviews}</td><td className="small">{ago(p.last_review)}</td>
+            <td><a href={routeHref({ kind: "project", id: p.id })} onClick={(e) => e.stopPropagation()}>{p.name}</a></td><td>{p.reviews}</td><td className="small">{ago(p.last_review)}</td>
           </tr>
         ))}
       </tbody>
@@ -600,10 +606,15 @@ function AgentsTable({ agents }) {
 
 // Projects open on their repository page, which holds history and chat.
 function ProjectRedirect({ id, go }) {
+  const [error, setError] = useState("");
   useEffect(() => {
-    api.project(id).then((p) => go({ kind: "repo", repo: p.path }, { replace: true }));
+    let active = true;
+    api.project(id).then((p) => {
+      if (active) go({ kind: "repo", repo: p.path }, { replace: true });
+    }).catch((e) => active && setError(e.message));
+    return () => { active = false; };
   }, [id]);
-  return <div className="card muted">Loading…</div>;
+  return <div className={`card ${error ? "error" : "muted"}`}>{error || "Loading…"}</div>;
 }
 
 // Where you are, with a way back: Home › project or repository › review.
@@ -618,12 +629,12 @@ function Crumbs({ view, canGoBack, onBack, go }) {
   return (
     <nav className="crumbs">
       <button className="secondary" onClick={onBack} disabled={!canGoBack} aria-label="Back">←</button>
-      <a href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>Home</a>
+      <a href={routeHref({ kind: "home" })}>Home</a>
       {trail.map((item, i) => (
         <span key={i}>
           <span className="muted"> › </span>
           {item.to && i < trail.length - 1
-            ? <a href="#" onClick={(e) => (e.preventDefault(), go(item.to))}>{item.label}</a>
+            ? <a href={routeHref(item.to)}>{item.label}</a>
             : <b>{item.label}</b>}
         </span>
       ))}
@@ -639,27 +650,19 @@ export default function App() {
   const [scan, setScan] = useState(0);
   const [session, setSession] = useState(null);
   const [error, setError] = useState("");
-  const [view, setView] = useState({ kind: "home" });
+  const { view, go: navigate, context } = useRoute();
   const [drawer, setDrawer] = useState(false);
+  useEffect(() => setDrawer(false), [view.kind, view.repo, view.id]);
 
   useEffect(() => {
     api.session().then(setSession).catch((e) => setError(e.message));
   }, []);
 
-  const [history, setHistory] = useState([]);
-  const go = (next, { replace = false } = {}) => {
-    if (!replace) setHistory((h) => [...h.slice(-49), view]);
-    setView(next);
+  const go = (next, options) => {
+    navigate(next, options);
     setDrawer(false);
   };
-  // Pages fill in the repository they belong to, for the breadcrumb; not a navigation.
-  const context = (extra) => setView((v) => ({ ...v, ...extra }));
-  const back = () => {
-    setHistory((h) => {
-      if (h.length) setView(h[h.length - 1]);
-      return h.slice(0, -1);
-    });
-  };
+  const back = () => window.history.back();
 
   return (
     <div className={`shell ${prefs.collapsed ? "collapsed" : ""}`}>
@@ -667,15 +670,12 @@ export default function App() {
         <button className="menu" aria-label="Toggle projects menu"
           onClick={() => (window.matchMedia("(max-width: 760px)").matches
             ? setDrawer(!drawer) : setPrefs({ collapsed: !prefs.collapsed }))}>☰</button>
-        <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}><span className="brand-mark">A</span>AutoSDE</a>
-        <Crumbs view={view} canGoBack={history.length > 0} onBack={back} go={go} />
+        <a className="brand" href={routeHref({ kind: "home" })}><span className="brand-mark">A</span>AutoSDE</a>
+        <Crumbs view={view} canGoBack={window.history.length > 1} onBack={back} go={go} />
         <span className="grow" />
-        <a href="#" className={view.kind === "agents" ? "active" : ""}
-          onClick={(e) => (e.preventDefault(), go({ kind: "agents" }))}>Agents</a>
-        <a href="#" className={view.kind === "knowledge" ? "active" : ""}
-          onClick={(e) => (e.preventDefault(), go({ kind: "knowledge" }))}>Knowledge</a>
-        <a href="#" className={view.kind === "settings" ? "active" : ""}
-          onClick={(e) => (e.preventDefault(), go({ kind: "settings" }))}>Settings</a>
+        <a href={routeHref({ kind: "agents" })} className={view.kind === "agents" ? "active" : ""}>Agents</a>
+        <a href={routeHref({ kind: "knowledge" })} className={view.kind === "knowledge" ? "active" : ""}>Knowledge</a>
+        <a href={routeHref({ kind: "settings" })} className={view.kind === "settings" ? "active" : ""}>Settings</a>
       </header>
       <aside className={drawer ? "open" : ""}>
         {session && <Workspaces selected={view.repo} showBlocked={prefs.showBlocked} refresh={scan}
@@ -684,6 +684,7 @@ export default function App() {
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
       <main>
         {error && <div className="card error">{error}</div>}
+        {view.kind === "not-found" && <div className="card error">Page not found. Use Home to continue.</div>}
         {session && view.kind === "home" && (
           <Home onOpen={(id) => go({ kind: "review", id })} onProject={(id) => go({ kind: "project", id })} />
         )}
@@ -695,13 +696,13 @@ export default function App() {
         {view.kind === "review" && (
           <Review key={view.id} id={view.id} onContext={context} showAgents={prefs.showAgents} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
         )}
-        {session && view.kind === "knowledge" && <Knowledge />}
+        {session && view.kind === "knowledge" && <Knowledge selected={view.base} onSelect={(base, options) => go({ kind: "knowledge", base }, options)} />}
         {view.kind === "settings" && (
           <Settings theme={theme} setTheme={setTheme} prefs={prefs} setPrefs={setPrefs}
             onRescan={() => setScan((n) => n + 1)} />
         )}
-        {session && view.kind === "agents" && <Agents defaultModel={session.model} />}
-        {view.kind === "project" && <ProjectRedirect id={view.id} go={go} />}
+        {session && view.kind === "agents" && <Agents defaultModel={session.model} selected={view.agent} onSelect={(agent) => go({ kind: "agents", agent })} />}
+        {view.kind === "project" && <ProjectRedirect key={view.id} id={view.id} go={go} />}
       </main>
     </div>
   );

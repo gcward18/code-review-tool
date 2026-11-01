@@ -12,12 +12,11 @@ const PROMPTS = [
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-export default function Agents({ defaultModel }) {
+export default function Agents({ defaultModel, selected = "python", onSelect }) {
   const [saved, setSaved] = useState(null);
   const [draft, setDraft] = useState(null);
   const [status, setStatus] = useState({ kind: "", text: "" });
   const [newName, setNewName] = useState("");
-  const [selected, setSelected] = useState("python");
   const [models, setModels] = useState({});
   const [custom, setCustom] = useState({});
   const [runs, setRuns] = useState(null);
@@ -62,7 +61,7 @@ export default function Agents({ defaultModel }) {
       d.focus[name] = "";
     });
     setNewName("");
-    setSelected(name);
+    onSelect(name);
   };
 
   const modelField = (name) => {
@@ -107,10 +106,11 @@ export default function Agents({ defaultModel }) {
       </div>
 
       <div className="card">
+        {!draft.config.agents[selected] && <p className="error small">Agent “{selected}” was not found. Choose an agent below.</p>}
         <div className="actions picker">
           <label className="field grow">
             <span className="small muted">Agent</span>
-            <select value={current} onChange={(e) => setSelected(e.target.value)}>
+            <select value={current} onChange={(e) => onSelect(e.target.value)}>
               <optgroup label="Team">
                 {CORE.map((name) => <option key={name} value={name}>{name}</option>)}
               </optgroup>

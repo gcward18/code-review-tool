@@ -199,6 +199,25 @@ class KnowledgeApiTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read())
 
+    def test_bases_work_without_gitleaks_until_a_document_is_embedded(self):
+        import base64
+        import threading
+
+        from autosde.scan import ScanUnavailable
+
+        with patch("autosde.web.scanner", side_effect=ScanUnavailable("gitleaks missing")):
+            base = self.call("/api/knowledge", {"name": "no-scanner"})
+            self.assertEqual(self.call("/api/knowledge")[0]["name"], "no-scanner")
+            self.call(f"/api/knowledge/{base['id']}/documents",
+                      {"name": "g.md", "data": base64.b64encode(b"# A\n\ntext").decode()})
+            for _ in range(50):
+                doc = self.call(f"/api/knowledge/{base['id']}")["documents"][0]
+                if doc["status"] != "processing":
+                    break
+                threading.Event().wait(0.1)
+        self.assertEqual(doc["status"], "failed")
+        self.assertIn("AUTOSDE_GITLEAKS", doc["error"])
+
     def test_create_upload_search_and_chat_with_reference(self):
         import base64
         import threading

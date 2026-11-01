@@ -15,25 +15,50 @@ function toBase64(file) {
   });
 }
 
-function Bases({ bases, selected, onSelect, onCreated }) {
+function NewBase({ onCreated, onCancel }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const create = async (e) => {
     e.preventDefault();
+    setBusy(true);
     setError("");
     try {
       const base = await api.createKnowledge(name.trim(), description.trim());
-      setName("");
-      setDescription("");
       onCreated(base.id);
     } catch (err) {
-      setError(err.message);
+      setError(err.message === "Not found."
+        ? "The server is running an older AutoSDE. Restart `autosde serve` and try again."
+        : err.message);
+    } finally {
+      setBusy(false);
     }
   };
   return (
+    <form className="kb-create card-inset" onSubmit={create}>
+      <label className="field">
+        <span className="small">Name</span>
+        <input autoFocus value={name} placeholder="team-conventions" onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label className="field">
+        <span className="small">Description <span className="muted">· optional</span></span>
+        <input value={description} placeholder="Coding standards and review rules" onChange={(e) => setDescription(e.target.value)} />
+      </label>
+      {error && <p className="error small">{error}</p>}
+      <div className="actions">
+        <button type="submit" disabled={!name.trim() || busy}>{busy ? "Creating…" : "Create knowledge base"}</button>
+        {onCancel && <button type="button" className="secondary" onClick={onCancel}>Cancel</button>}
+      </div>
+    </form>
+  );
+}
+
+function Bases({ bases, selected, onSelect, creating, setCreating, onCreated }) {
+  return (
     <>
-      {bases.length === 0 && <p className="muted small">No knowledge bases yet. Create one for team conventions, API docs or runbooks.</p>}
+      {creating && <NewBase onCreated={(id) => (setCreating(false), onCreated(id))}
+        onCancel={bases.length ? () => setCreating(false) : null} />}
       <ul className="tree kb-list">
         {bases.map((b) => (
           <li key={b.id}>
@@ -44,12 +69,6 @@ function Bases({ bases, selected, onSelect, onCreated }) {
           </li>
         ))}
       </ul>
-      <form className="kb-create" onSubmit={create}>
-        <input value={name} placeholder="New knowledge base, e.g. team-conventions" onChange={(e) => setName(e.target.value)} />
-        <input value={description} placeholder="What it holds (optional)" onChange={(e) => setDescription(e.target.value)} />
-        <button type="submit" disabled={!name.trim()}>Create</button>
-      </form>
-      {error && <p className="error small">{error}</p>}
     </>
   );
 }
@@ -249,22 +268,48 @@ function Tester({ bases, selected }) {
   );
 }
 
-export default function Knowledge() {
+function EmptyState({ onNew }) {
+  return (
+    <div className="empty">
+      <div className="empty-icon">📚</div>
+      <h3>Give your agents reference material</h3>
+      <p className="small muted">Create a knowledge base, upload your conventions, API docs or runbooks, and attach it to agents on the Agents page.</p>
+      <button onClick={onNew}>+ New knowledge base</button>
+    </div>
+  );
+}
+
+export default function Knowledge({ selected, onSelect: setSelected }) {
   const [bases, setBases] = useState([]);
-  const [selected, setSelected] = useState(null);
   const [base, setBase] = useState(null);
   const [error, setError] = useState("");
+  const [creating, setCreating] = useState(false);
 
-  const loadBases = () => api.knowledge().then(setBases).catch((e) => setError(e.message));
-  const loadBase = (id) => (id ? api.knowledgeBase(id).then(setBase) : setBase(null));
+  const loadBases = () => api.knowledge().then((list) => {
+    setBases(list);
+    if (!list.length) setCreating(true);
+  }).catch((e) => setError(e.message === "Not found."
+    ? "The server is running an older AutoSDE without knowledge bases. Restart `autosde serve` and reload this page."
+    : e.message));
+  const selection = useRef(selected);
+  selection.current = selected;
+  const loadBase = (id) => (id ? api.knowledgeBase(id)
+    .then((data) => { if (selection.current === id) setBase(data); })
+    .catch((e) => { if (selection.current === id) setError(e.message); }) : setBase(null));
   useEffect(() => {
     loadBases();
   }, []);
   useEffect(() => {
-    if (!selected && bases.length) setSelected(bases[0].id);
-  }, [bases]);
+    if (!selected && bases.length) setSelected(bases[0].id, { replace: true });
+  }, [bases, selected]);
   useEffect(() => {
-    loadBase(selected);
+    let active = true;
+    setBase(null);
+    setError("");
+    if (selected) api.knowledgeBase(selected)
+      .then((data) => { if (active) setBase(data); })
+      .catch((e) => { if (active) setError(e.message); });
+    return () => { active = false; };
   }, [selected]);
   useEffect(() => {  // poll while documents are embedding
     if (!base?.documents.some((d) => d.status === "processing")) return undefined;
@@ -273,20 +318,27 @@ export default function Knowledge() {
   }, [base]);
 
   const refresh = () => (loadBase(selected), loadBases());
-  if (error) return <div className="card error">{error}</div>;
+
   return (
     <Workspace
-      topLeft={<Panel title={`Knowledge bases (${bases.length})`}>
-        <Bases bases={bases} selected={selected} onSelect={setSelected}
-          onCreated={(id) => (loadBases(), setSelected(id))} />
+      topLeft={<Panel title={`Knowledge bases (${bases.length})`}
+        actions={!creating && <button onClick={() => setCreating(true)}>+ New</button>}>
+        {error && <p className="error small">{error}</p>}
+        <Bases bases={bases} selected={selected} onSelect={setSelected} creating={creating}
+          setCreating={setCreating} onCreated={(id) => (loadBases(), setSelected(id))} />
       </Panel>}
       bottomLeft={<Panel title={base ? `Strategy · ${base.name}` : "Strategy"}>
-        {base ? <Strategy base={base} onSaved={(b) => (setBase(b), loadBases())}
-          onDeleted={() => (setSelected(null), setBase(null), loadBases())} />
-          : <p className="muted small">Select or create a knowledge base.</p>}
+        {base ? <Strategy key={base.id} base={base} onSaved={(b) => (setBase(b), loadBases())}
+          onDeleted={() => {
+            setBases((items) => items.filter((item) => item.id !== base.id));
+            setSelected(null);
+            setBase(null);
+            loadBases();
+          }} />
+          : <EmptyState onNew={() => setCreating(true)} />}
       </Panel>}
       topRight={<Panel title={base ? `Documents · ${base.name}` : "Documents"}>
-        {base ? <Documents base={base} onChanged={refresh} /> : <p className="muted small">Select a knowledge base to upload documents.</p>}
+        {base ? <Documents key={base.id} base={base} onChanged={refresh} /> : <p className="muted small">Select a knowledge base to upload documents.</p>}
       </Panel>}
       bottomRight={<Panel title="Retrieval tester">
         {bases.length ? <Tester bases={bases} selected={selected} /> : <p className="muted small">Create a knowledge base first.</p>}

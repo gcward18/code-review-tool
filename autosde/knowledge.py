@@ -411,9 +411,12 @@ class Knowledge:
         except KnowledgeError as error:
             self.db.execute("UPDATE kb_documents SET status = 'failed', error = ? WHERE id = ?",
                             (str(error), doc_id))
-        except Exception as error:  # embedding API or other failure: class name only
+        except Exception as error:  # scanner, embedding API or other failure: no messages
+            reason = ("Gitleaks is not available; set AUTOSDE_GITLEAKS to scan documents."
+                      if type(error).__name__ == "ScanUnavailable"
+                      else f"Embedding failed ({type(error).__name__}).")
             self.db.execute("UPDATE kb_documents SET status = 'failed', error = ? WHERE id = ?",
-                            (f"Embedding failed ({type(error).__name__}).", doc_id))
+                            (reason, doc_id))
 
     def delete_document(self, doc_id):
         for row in self._all("SELECT id FROM kb_chunks WHERE doc_id = ?", doc_id):

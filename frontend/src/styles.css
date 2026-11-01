@@ -278,3 +278,9 @@ pre.fix, .md-code.fix { background: var(--surface); }
 .chunk pre { white-space: pre-wrap; margin: 6px 0 0; font: 12.5px/1.5 var(--font-code); max-height: 220px; overflow: auto; }
 button.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 40%, transparent); }
 .status-failed { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); }
+.card-inset { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.card-inset input { background: var(--panel); }
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px; height: 100%; padding: 16px; }
+.empty-icon { font-size: 32px; }
+.empty h3 { margin: 0; }
+.empty p { max-width: 380px; margin: 0 0 6px; }

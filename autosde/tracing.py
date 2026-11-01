@@ -10,6 +10,7 @@ a background thread and failures never affect a review.
 import json
 import os
 import ssl
+import sys
 import time
 import urllib.request
 import uuid
@@ -35,6 +36,37 @@ def _order(seconds, run_id):
     return _stamp(seconds).strftime("%Y%m%dT%H%M%S%fZ") + run_id
 
 
+_WORKSPACES = {}  # endpoint -> workspace id, looked up once per process
+
+
+def _opener():
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+        _NoRedirect(),
+    )
+
+
+def workspace(api_key, endpoint, opener=None):
+    """LangSmith refuses runs without a workspace header; use the key's only workspace."""
+    if endpoint not in _WORKSPACES:
+        request = urllib.request.Request(endpoint + "/api/v1/workspaces",
+                                         headers={"x-api-key": api_key})
+        try:
+            with (opener or _opener()).open(request, timeout=5) as response:
+                found = json.loads(response.read(1_000_000))
+        except Exception:
+            raise RuntimeError("LangSmith workspaces could not be listed") from None
+        if len(found) != 1:
+            raise RuntimeError("Key has several LangSmith workspaces; set LANGSMITH_WORKSPACE_ID")
+        _WORKSPACES[endpoint] = found[0]["id"]
+    return _WORKSPACES[endpoint]
+
+
+def _warn(message):
+    print(f"autosde: LangSmith {message}", file=sys.stderr, flush=True)
+
+
 class Tracer:
     """Posts runs to LangSmith. The key only ever appears in request headers."""
 
@@ -48,11 +80,7 @@ class Tracer:
         self.project, self.endpoint, self.timeout = project, endpoint, timeout
         self.scan = scan or (lambda text: [])
         self.errors = []  # error class names / HTTP codes, never messages
-        self._opener = opener or urllib.request.build_opener(
-            urllib.request.ProxyHandler({}),
-            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
-            _NoRedirect(),
-        )
+        self._opener = opener or _opener()
         self._queue = ThreadPoolExecutor(max_workers=1)  # keeps parent before children
 
     def __repr__(self):
@@ -139,8 +167,11 @@ class TracedModel:
     def finish(self, outputs):
         try:
             self.tracer.finish(self.root, outputs)
+            self.tracer.flush()
         except Exception:
             pass
+        if self.tracer.errors:
+            _warn("trace incomplete: " + ", ".join(sorted(set(self.tracer.errors))))
 
 
 def traced(model, *, review_id, name, scan, config=None, environ=os.environ, opener=None):
@@ -150,8 +181,14 @@ def traced(model, *, review_id, name, scan, config=None, environ=os.environ, ope
     key = environ.get("LANGSMITH_API_KEY")
     if not settings.get("enabled") or not key:
         return model
+    try:
+        workspace_id = environ.get("LANGSMITH_WORKSPACE_ID") or workspace(
+            key, settings["endpoint"], opener)
+    except RuntimeError as error:
+        _warn(f"tracing skipped: {error}")
+        return model
     tracer = Tracer(key, project=settings["project"], endpoint=settings["endpoint"],
-                    workspace_id=environ.get("LANGSMITH_WORKSPACE_ID"), scan=scan, opener=opener)
+                    workspace_id=workspace_id, scan=scan, opener=opener)
     root = tracer.start(name, {"review_id": review_id, "model": model.model})
     return TracedModel(model, tracer, root, config)
 

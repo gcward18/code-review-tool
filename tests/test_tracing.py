@@ -19,6 +19,20 @@ class FakeLangSmith:
         self.requests = []
 
     def open(self, request, timeout):
+        if request.full_url.endswith("/api/v1/workspaces"):
+            payload = json.dumps([{"id": "ws-1"}]).encode()
+
+            class Listing:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self, n):
+                    return payload
+
+            return Listing()
         self.requests.append((request.get_method(), request.full_url, dict(request.header_items()),
                               json.loads(request.data)))
 
@@ -34,6 +48,7 @@ class FakeLangSmith:
 
 class TracingTests(unittest.TestCase):
     def setUp(self):
+        tracing._WORKSPACES.clear()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         prompts = Path(tmp.name) / "prompts"
@@ -62,8 +77,6 @@ class TracingTests(unittest.TestCase):
         with patch.object(tracing, "traced", traced):
             run_review(self.repo, "HEAD~1..HEAD", store=self.store, model=model,
                        settings=self.settings, scan=scan)
-        if isinstance(self.wrapped, tracing.TracedModel):
-            self.wrapped.tracer.flush()
         return fake.requests
 
     def test_review_is_one_trace_with_full_content_per_traced_agent(self):
@@ -82,6 +95,7 @@ class TracingTests(unittest.TestCase):
         self.assertEqual((method, url), ("PATCH", f"https://api.smith.langchain.com/runs/{root['id']}"))
         self.assertEqual(body["outputs"]["findings"][0]["title"], "Total is overwritten")
         self.assertEqual(headers["X-api-key"], KEY)
+        self.assertEqual(headers["X-tenant-id"], "ws-1")
         self.assertNotIn(KEY, json.dumps([b for *_, b in requests]))
 
     def test_gitleaks_hits_are_withheld(self):
@@ -89,6 +103,11 @@ class TracingTests(unittest.TestCase):
         requests = self.review(scan=scan)
         python = next(b for m, _, _, b in requests if m == "POST" and b["name"] == "python")
         self.assertEqual(python["outputs"]["content"], tracing.WITHHELD)
+
+    def test_suite_has_no_real_keys(self):
+        import os
+
+        self.assertNotIn("LANGSMITH_API_KEY", os.environ)
 
     def test_off_without_switch_or_key(self):
         self.assertEqual(self.review(enabled=False), [])

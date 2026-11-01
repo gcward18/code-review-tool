@@ -4,6 +4,11 @@ from pathlib import Path
 
 from autosde.config import Settings
 
+# Tests never reach real services: without these, a developer's agents.json with
+# LangSmith on would trace test reviews to their account.
+for _name in [n for n in os.environ if n.startswith(("LANGSMITH_", "LANGCHAIN_", "OPENAI_"))]:
+    del os.environ[_name]
+
 BASE = 'def calculate_total(items):\n    return sum(i["price"] for i in items)\n'
 HEAD = (
     "def calculate_total(items):\n    total = 0\n    for item in items:\n"

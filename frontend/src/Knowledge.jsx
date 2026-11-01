@@ -317,7 +317,15 @@ function Documents({ base, onChanged }) {
                   <td><span className={`badge ${d.status === "ready" ? "status-completed" : d.status === "failed" ? "status-failed" : "status-awaiting_approval"}`}>{d.status}</span></td>
                   <td className="small">{size(d.bytes)}</td>
                   <td className="small">{d.chunks} · {d.tokens} tok</td>
-                  <td><button className="secondary danger small-btn" onClick={() => remove([d.id])}>Remove</button></td>
+                  <td className="row-actions">
+                    {d.status === "failed" && d.has_text ? (
+                      <button className="secondary small-btn" onClick={async () => {
+                        await api.retryDocument(d.id);
+                        onChanged();
+                      }}>Retry</button>
+                    ) : null}
+                    <button className="secondary danger small-btn" onClick={() => remove([d.id])}>Remove</button>
+                  </td>
                 </tr>
                 {open === d.id && (
                   <tr><td colSpan={6}>

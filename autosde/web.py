@@ -372,6 +372,10 @@ class App:
                 if method == "POST" and parts[2:] == ["delete"]:
                     kb.delete_document(doc_id)
                     return {"ok": True}
+                if method == "POST" and parts[2:] == ["retry"]:
+                    doc = kb.retry(doc_id)
+                    threading.Thread(target=kb.reindex, args=([doc],), daemon=True).start()
+                    return {"id": doc_id, "status": "processing"}
             if parts and parts[0].isdigit():
                 kb_id, rest = int(parts[0]), parts[1:]
                 if method == "GET" and not rest:

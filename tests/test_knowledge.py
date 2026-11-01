@@ -94,6 +94,12 @@ class PdfTests(unittest.TestCase):
         pieces = chunk(text, title="handbook.pdf")
         self.assertEqual([p.heading for p in pieces], ["handbook.pdf > Page 1", "handbook.pdf > Page 2"])
 
+    def test_code_comments_in_pdfs_do_not_become_headings(self):
+        text = extract("book.pdf", make_pdf(["# Oops! a code comment", "Page two text."]))
+        pieces = chunk(text, title="book.pdf")
+        self.assertEqual([p.heading for p in pieces], ["book.pdf > Page 1", "book.pdf > Page 2"])
+        self.assertIn("Oops! a code comment", pieces[0].text)
+
     def test_image_only_corrupt_and_missing_pypdf_explain_themselves(self):
         with self.assertRaises(KnowledgeError) as scanned:
             extract("scan.pdf", make_pdf([""]))

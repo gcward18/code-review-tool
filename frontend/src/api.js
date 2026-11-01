@@ -42,6 +42,7 @@ export const api = {
   uploadDocument: (id, name, data) =>
     call(`/api/knowledge/${id}/documents`, { method: "POST", body: JSON.stringify({ name, data }) }),
   documentChunks: (doc) => call(`/api/knowledge/documents/${doc}/chunks`),
+  retryDocument: (doc) => call(`/api/knowledge/documents/${doc}/retry`, { method: "POST", body: "{}" }),
   deleteDocument: (doc) => call(`/api/knowledge/documents/${doc}/delete`, { method: "POST", body: "{}" }),
   searchKnowledge: (kb_ids, query) =>
     call("/api/knowledge/search", { method: "POST", body: JSON.stringify({ kb_ids, query }) }),

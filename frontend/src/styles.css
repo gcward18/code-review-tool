@@ -312,3 +312,4 @@ button.small-btn { padding: 2px 10px; font-size: 12px; }
 .lab-chunk.tone-1 { border-left: 3px solid var(--highlight); }
 .kb-paste-area { font: 12.5px/1.5 var(--font-code); margin-top: 8px; }
 mark { background: color-mix(in srgb, var(--highlight) 45%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.row-actions { white-space: nowrap; } .row-actions button + button { margin-left: 6px; }

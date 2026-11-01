@@ -99,6 +99,11 @@ def _docx(data):
 
 def _pdf(data):
     """Text per page via the optional pypdf extra; each page becomes a `## Page n` section."""
+    import logging
+
+    # pypdf warns about fonts it can only partly decode (for example without fontTools);
+    # extraction still works, so keep those notes out of the server's terminal.
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
     try:
         from pypdf import PdfReader
         from pypdf.errors import PdfReadError
@@ -111,6 +116,8 @@ def _pdf(data):
         pages = []
         for number, page in enumerate(reader.pages, 1):
             text = (page.extract_text() or "").strip()
+            # PDF text has no Markdown: a leading "#" is usually a code comment, not a heading.
+            text = re.sub(r"^(\s*)#", r"\1\\#", text, flags=re.M)
             if text:
                 pages.append(f"## Page {number}\n\n{text}")
     except KnowledgeError:
@@ -381,7 +388,8 @@ class Knowledge:
             " COALESCE(SUM(d.tokens), 0) AS tokens FROM knowledge_bases k"
             " LEFT JOIN kb_documents d ON d.kb_id = k.id GROUP BY k.id ORDER BY k.name")
         for row in rows:
-            row["settings"] = json.loads(row["settings"])
+            # Bases saved before newer settings existed get today's defaults for them.
+            row["settings"] = {**DEFAULTS, **json.loads(row["settings"])}
         return rows
 
     def base(self, kb_id):
@@ -470,6 +478,8 @@ class Knowledge:
         from autosde.chunking import split
 
         suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if suffix == ".pdf":  # only the page markers are headings in PDF text
+            text = re.sub(r"^(\s*)#(?!# Page \d+$)", r"\1\\#", text, flags=re.M)
         return split(text, title=name, settings=settings, code=suffix in CODE_TYPES,
                      embed=self._embed)
 
@@ -509,6 +519,17 @@ class Knowledge:
         for row in self._all("SELECT id FROM kb_chunks WHERE doc_id = ?", doc_id):
             self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (row["id"],))
         self.db.execute("DELETE FROM kb_chunks WHERE doc_id = ?", (doc_id,))
+
+    def retry(self, doc_id):
+        """Re-index one document from its stored text (after a failure or a strategy change)."""
+        rows = self._all("SELECT * FROM kb_documents WHERE id = ?", doc_id)
+        if not rows:
+            raise KnowledgeError("No such document.")
+        if not rows[0]["content"]:
+            raise KnowledgeError("That document has no stored text; remove it and upload it again.")
+        self.db.execute("UPDATE kb_documents SET status = 'processing', error = NULL WHERE id = ?",
+                        (doc_id,))
+        return rows[0]
 
     def rechunk(self, kb_id):
         """Mark documents with stored text for re-indexing; returns (doc rows, skipped names)."""

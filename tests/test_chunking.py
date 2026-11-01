@@ -138,6 +138,28 @@ class LabTests(unittest.TestCase):
         self.assertEqual(self.calls, [("text-embedding-ada-002", None)])
 
 
+class OldSettingsTests(unittest.TestCase):
+    def test_bases_saved_before_strategies_still_index_and_failed_documents_retry(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "k.db")
+            kb = Knowledge(store.db, embed=ScriptedModel({}).embed, scan=clean_scan)
+            base = kb.create("old")
+            old = {k: v for k, v in json.loads(store.db.execute(
+                "SELECT settings FROM knowledge_bases").fetchone()[0]).items()
+                if k not in ("strategy", "semantic_percentile")}
+            store.db.execute("UPDATE knowledge_bases SET settings = ?", (json.dumps(old),))
+            doc = kb.add_document(base["id"], "a.md", b"# A\n\nSome text here.")
+            store.db.execute("UPDATE kb_documents SET content = ?, status = 'failed',"
+                             " error = 'Embedding failed (KeyError).' WHERE id = ?",
+                             ("# A\n\nSome text here.", doc))
+            row = kb.retry(doc)
+            kb.reindex([row])
+            ready = kb.base(base["id"])["documents"][0]
+            self.assertEqual((ready["status"], ready["strategy"], ready["error"]), ("ready", "structure", None))
+
+
 class MigrationTests(unittest.TestCase):
     def test_older_databases_gain_document_text_and_strategy_columns(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -26,7 +26,7 @@ autosde agents calculator                       # which agents ran against the p
 autosde serve                                   # http://127.0.0.1:8765/ to submit and browse
 ```
 
-On the web page, browse your home folder, **Select** a git repository, then pick **From** and **To** from dropdowns of branches and recent commits. The defaults are `main` (or `master`) → `HEAD`; when `main` *is* `HEAD`, From defaults to the previous commit. The review covers every commit after From up to and including To.
+The web page (`autosde serve`, a React app) has a folder **tree** on the left: expand folders and select a git repository (◆). Then pick **From** (the newer end, default `HEAD`). **To** unlocks once From is chosen and lists only branches and commits **older** than From; it defaults to `main` when that is older, otherwise to From's parent. The review covers every commit after To up to and including From. Themes: Light, Dark and Dracula (header menu, remembered). On narrow screens the tree becomes a drawer (☰).
 
 Only committed history is reviewed; uncommitted edits are ignored.
 
@@ -60,6 +60,13 @@ Prompts live in `autosde/prompts/` and are re-read on every call. `notebooks/tea
 
 ```sh
 python3 -m unittest discover -s tests -t tests
+```
+
+The frontend lives in `frontend/` (Vite + React). The built UI is committed in `autosde/static/`, so running AutoSDE needs no Node. After UI changes:
+
+```sh
+cd frontend && npm install && npm run build   # writes autosde/static/
+npm run dev                                   # live reload; proxies /api to `autosde serve` on :8765
 ```
 
 The earlier AWS version is preserved in the `Code Review Service` repository at the `aws-deployment-v1` tag.

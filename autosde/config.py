@@ -17,6 +17,10 @@ class Settings:
     reasoning_effort: str | None
     db_path: Path
     gitleaks: str | None
+    # Optional AWS Secrets Manager fallback for the OpenAI key (OPENAI_API_KEY wins).
+    secret_id: str | None = None
+    aws_profile: str | None = None
+    aws_region: str = "us-east-1"
     max_file_bytes: int = 64_000
     max_total_bytes: int = 400_000
 
@@ -38,4 +42,7 @@ def load_settings():
         reasoning_effort=None if effort == "none" else effort,
         db_path=Path(os.environ.get("AUTOSDE_DB", HOME / "autosde.db")),
         gitleaks=gitleaks_path(),
+        secret_id=os.environ.get("AUTOSDE_SECRET_ID", "autosde/openai-api-key"),
+        aws_profile=os.environ.get("AUTOSDE_SECRET_PROFILE", "ik_lab"),
+        aws_region=os.environ.get("AUTOSDE_SECRET_REGION", "us-east-1"),
     )

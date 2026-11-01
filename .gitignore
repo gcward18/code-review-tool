@@ -8,6 +8,9 @@
 .vscode/
 .DS_Store
 
+# Frontend dependencies (the built UI in autosde/static is committed)
+node_modules/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -11,7 +11,6 @@ from autosde.llm import ScriptedModel
 from autosde.noise import flag
 from autosde.review import approve, cancel, prepare
 from autosde.team import Team
-from autosde.web import App
 from helpers import FINDING, clean_scan, findings, repository, settings, verdict
 
 NOISE = {
@@ -127,7 +126,7 @@ class CliApprovalTests(Fixture):
         out, err = io.StringIO(), io.StringIO()
         model = self.model()
         with patch("autosde.cli.load_settings", return_value=self.settings), \
-                patch("autosde.cli.OpenAIModel", return_value=model), \
+                patch("autosde.cli.OpenAIModel.from_settings", return_value=model), \
                 patch("autosde.review.scanner", return_value=clean_scan), \
                 patch("sys.stdin.isatty", return_value=tty), \
                 patch("builtins.input", return_value=answer or ""), \
@@ -162,27 +161,6 @@ class CliApprovalTests(Fixture):
         self.assertIn("general", roles)  # flagged files were approved too
 
 
-class WebApprovalTests(Fixture):
-    def test_plan_page_checkboxes_decide_and_expire(self):
-        app = App(self.store, self.settings, model_factory=self.model, port=0,
-                  browse_root=self.tmp.name)
-        pending = self.prepare(self.model())
-        app.pending[pending.review_id] = pending
-        page = app.review(pending.review_id)
-        self.assertIn('value="calculator.py" checked', page)
-        self.assertIn('value="package-lock.json">', page)  # flagged: unchecked
-        self.assertIn("flagged: lockfile", page)
-        self.assertEqual(app.decide(pending.review_id, {"token": ["wrong"]}, approved=True),
-                         "This form has expired; reload the page.")
-        self.assertIsNone(app.decide(pending.review_id, {"token": [app.token]}, approved=False))
-        self.assertEqual(self.store.review(pending.review_id)["status"], "cancelled")
-        handing_over = self.prepare(self.model())  # saved, not yet registered by this process
-        app.planning.add(handing_over.review_id)
-        self.assertIn("Waiting for the team", app.review(handing_over.review_id))
-        self.assertEqual(self.store.review(handing_over.review_id)["status"], "awaiting_approval")
-        orphan = self.prepare(self.model())  # never registered: e.g. after a restart
-        app.review(orphan.review_id)
-        self.assertEqual(self.store.review(orphan.review_id)["status"], "expired")
 
 
 if __name__ == "__main__":

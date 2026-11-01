@@ -25,21 +25,67 @@ class Reply:
         return self.error is None and self.text is not None
 
 
+def _key_from_secrets_manager(secret_id, profile, region):
+    """Read the key on demand; never stored in os.environ, never in error messages."""
+    try:
+        import boto3
+    except ImportError:
+        raise RuntimeError(
+            "Reading the key from Secrets Manager needs boto3: pip install -e '.[aws]'"
+        ) from None
+    try:
+        raw = (
+            boto3.Session(profile_name=profile, region_name=region)
+            .client("secretsmanager")
+            .get_secret_value(SecretId=secret_id)["SecretString"]
+        )
+        return json.loads(raw)["api_key"] if raw.lstrip().startswith("{") else raw.strip()
+    except Exception:
+        raise RuntimeError("OpenAI key could not be read from Secrets Manager") from None
+
+
 class OpenAIModel:
     """One HTTPS attempt per call; responses are not stored by OpenAI (`store: false`)."""
 
-    def __init__(self, model, *, api_key=None, reasoning_effort="low", timeout=120):
+    def __init__(
+        self,
+        model,
+        *,
+        api_key=None,
+        reasoning_effort="low",
+        timeout=120,
+        secret_id=None,  # e.g. "autosde/openai-api-key"; None = no AWS lookup
+        aws_profile=None,  # e.g. "ik_lab"
+        aws_region="us-east-1",
+    ):
         self.model, self.reasoning_effort, self.timeout = model, reasoning_effort, timeout
-        self._key = api_key or os.environ.get("OPENAI_API_KEY")
+        self._key = (
+            api_key
+            or os.environ.get("OPENAI_API_KEY")
+            or (secret_id and _key_from_secrets_manager(secret_id, aws_profile, aws_region))
+        )
         if not self._key:
-            raise RuntimeError("Set OPENAI_API_KEY to run reviews")
+            raise RuntimeError(
+                "Set OPENAI_API_KEY, pass api_key, or configure secret_id to run reviews"
+            )
         self._opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
             urllib.request.HTTPSHandler(context=ssl.create_default_context()),
         )
 
+    @classmethod
+    def from_settings(cls, settings):
+        """The one way the CLI, web app and notebook build the model."""
+        return cls(
+            settings.model,
+            reasoning_effort=settings.reasoning_effort,
+            secret_id=settings.secret_id,
+            aws_profile=settings.aws_profile,
+            aws_region=settings.aws_region,
+        )
+
     def __repr__(self):
-        return f"OpenAIModel({self.model!r})"
+        return f"OpenAIModel(model={self.model!r}, api_key=<redacted>)"
 
     def complete(self, *, role, system, prompt, schema, max_output_tokens):
         body = {

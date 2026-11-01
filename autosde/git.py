@@ -106,6 +106,26 @@ def resolve_ref(repo, ref):
     return out.decode().strip() or None
 
 
+def older(repo, ref, branches, *, limit=100):
+    """Branches and commits strictly older than `ref` (its ancestors), newest first."""
+    sha = resolve_ref(repo, ref)
+    if sha is None:
+        return [], []
+    log = _git(repo, "log", f"-n{limit}", "--format=%H%x1f%h%x1f%s%x1f%cr", f"{sha}~1",
+               check=False).decode("utf-8", "replace")
+    commits = [Commit(*line.split("\x1f", 3)) for line in log.splitlines() if line.count("\x1f") == 3]
+    names = []
+    for name in branches:
+        tip = resolve_ref(repo, name)
+        is_ancestor = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", tip or "", sha],
+            capture_output=True, timeout=30,
+        ).returncode == 0
+        if tip and tip != sha and is_ancestor:
+            names.append(name)
+    return names, commits
+
+
 def default_base(branches):
     """`main`, else `master`, else None (the caller falls back to an older commit)."""
     return next((name for name in ("main", "master") if name in branches), None)

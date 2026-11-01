@@ -78,7 +78,7 @@ def main(argv=None):
 
     if args.command == "review":
         try:
-            model = OpenAIModel(settings.model, reasoning_effort=settings.reasoning_effort)
+            model = OpenAIModel.from_settings(settings)
             print(f"Planning {args.range} in {args.repo} with {settings.model}...", file=sys.stderr)
             pending = prepare(args.repo, args.range, store=store, model=model, settings=settings)
             plan = pending.result

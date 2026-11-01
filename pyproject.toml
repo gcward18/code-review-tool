@@ -5,6 +5,10 @@ description = "Local code review of commit ranges by an agent team; results in S
 requires-python = ">=3.12"
 dependencies = []
 
+[project.optional-dependencies]
+# Only for reading the OpenAI key from AWS Secrets Manager.
+aws = ["boto3"]
+
 [project.scripts]
 autosde = "autosde.cli:main"
 
@@ -16,7 +20,7 @@ build-backend = "setuptools.build_meta"
 include = ["autosde*"]
 
 [tool.setuptools.package-data]
-autosde = ["prompts/*.md", "prompts/focus/*.md"]
+autosde = ["prompts/*.md", "prompts/focus/*.md", "static/*.html", "static/assets/*"]
 
 [tool.ruff]
 line-length = 100

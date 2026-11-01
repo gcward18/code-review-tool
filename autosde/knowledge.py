@@ -377,6 +377,8 @@ class Knowledge:
             for column in ("content", "strategy"):  # added after the first release
                 if column not in columns:
                     self.db.execute(f"ALTER TABLE kb_documents ADD COLUMN {column} TEXT")
+            if "summary" not in {row[1] for row in self.db.execute("PRAGMA table_info(kb_chunks)")}:
+                self.db.execute("ALTER TABLE kb_chunks ADD COLUMN summary TEXT")
 
     def _all(self, sql, *args):
         return [dict(row) for row in self.db.execute(sql, args)]
@@ -567,13 +569,76 @@ class Knowledge:
                 "chunks": [{"position": p.position, "heading": p.heading, "text": p.text,
                             "tokens": p.tokens} for p in pieces[:500]]}
 
+    def rename(self, doc_id, name):
+        """Rename a document; its chunks' heading paths (and keyword index) follow."""
+        rows = self._all("SELECT name FROM kb_documents WHERE id = ?", doc_id)
+        if not rows:
+            raise KnowledgeError("No such document.")
+        old = rows[0]["name"]
+        new = re.sub(r"[^\w .()\-]", "_", (name or "").strip())[:120]
+        if not new:
+            raise KnowledgeError("Give the document a name.")
+        old_suffix = old.rsplit(".", 1)[-1].lower() if "." in old else ""
+        if old_suffix and not new.lower().endswith("." + old_suffix):
+            new += "." + old_suffix  # keep the type, which decides how the text is chunked
+        with self.db:
+            self.db.execute("UPDATE kb_documents SET name = ? WHERE id = ?", (new, doc_id))
+            for chunk_row in self._all("SELECT id, heading, text FROM kb_chunks WHERE doc_id = ?", doc_id):
+                heading = chunk_row["heading"]
+                if heading == old or heading.startswith(old + " > "):
+                    heading = new + heading[len(old):]
+                    self.db.execute("UPDATE kb_chunks SET heading = ? WHERE id = ?", (heading, chunk_row["id"]))
+                    self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (chunk_row["id"],))
+                    self.db.execute("INSERT INTO kb_fts(rowid, heading, text) VALUES (?, ?, ?)",
+                                    (chunk_row["id"], heading, chunk_row["text"]))
+        return {"id": doc_id, "name": new}
+
     def delete_document(self, doc_id):
         self._clear_chunks(doc_id)
         self.db.execute("DELETE FROM kb_documents WHERE id = ?", (doc_id,))
 
     def chunks(self, doc_id):
-        return self._all("SELECT position, heading, text, tokens FROM kb_chunks WHERE doc_id = ?"
+        """A document's chunks with their cached summary and locally computed key terms."""
+        rows = self._all("SELECT id, position, heading, text, tokens, summary FROM kb_chunks"
+                         " WHERE doc_id = ? ORDER BY position", doc_id)
+        for row, terms in zip(rows, key_terms([r["text"] for r in rows])):
+            row["terms"] = terms
+        return rows
+
+    def summarize(self, doc_id, complete, *, positions=None, limit=40, batch=20):
+        """Summarize up to `limit` chunks still missing a summary (or the given positions).
+
+        `complete(prompt_json, schema)` returns the parsed reply or None. Returns the number
+        summarized, how many remain, and the model tokens spent."""
+        rows = self._all("SELECT id, position, heading, text FROM kb_chunks WHERE doc_id = ?"
                          " ORDER BY position", doc_id)
+        if positions is not None:
+            wanted = set(positions)
+            todo = [r for r in rows if r["position"] in wanted]
+        else:
+            done = {r["id"] for r in self._all("SELECT id FROM kb_chunks WHERE doc_id = ?"
+                                               " AND summary IS NOT NULL", doc_id)}
+            todo = [r for r in rows if r["id"] not in done]
+        summarized, spent = 0, [0, 0]
+        for start in range(0, min(len(todo), limit), batch):
+            group = todo[start:min(start + batch, limit)]
+            payload = json.dumps({"chunks": [{"n": r["position"] + 1, "heading": r["heading"],
+                                              "text": r["text"][:6000]} for r in group]})
+            reply, used = complete(payload, SUMMARY_SCHEMA)
+            spent = [spent[0] + used[0], spent[1] + used[1]]
+            by_n = {item.get("n"): item.get("summary", "").strip()
+                    for item in (reply or {}).get("summaries", [])}
+            for r in group:
+                text = by_n.get(r["position"] + 1)
+                if text:
+                    self.db.execute("UPDATE kb_chunks SET summary = ? WHERE id = ?", (text[:300], r["id"]))
+                    summarized += 1
+            if reply is None:
+                break  # the model call failed; stop rather than retry
+        remaining = self.db.execute("SELECT COUNT(*) FROM kb_chunks WHERE doc_id = ? AND summary IS NULL",
+                                    (doc_id,)).fetchone()[0]
+        return {"summarized": summarized, "remaining": remaining, "input_tokens": spent[0],
+                "output_tokens": spent[1]}
 
     # retrieval
     def search(self, kb_ids, query, *, top_k=None, context_tokens=None):
@@ -630,7 +695,7 @@ class Knowledge:
             return []
         ids = sorted(fused, key=fused.get, reverse=True)
         rows = {r["id"]: r for r in self._all(
-            f"SELECT c.id, c.doc_id, c.kb_id, c.position, c.heading, c.text, c.tokens,"
+            f"SELECT c.id, c.doc_id, c.kb_id, c.position, c.heading, c.text, c.tokens, c.summary,"
             f" d.name AS document, k.name AS knowledge_base FROM kb_chunks c"
             f" JOIN kb_documents d ON d.id = c.doc_id JOIN knowledge_bases k ON k.id = c.kb_id"
             f" WHERE c.id IN ({','.join('?' * len(ids))})", *ids)}
@@ -649,6 +714,40 @@ class Knowledge:
             if len(results) >= top_k:
                 break
         return results
+
+
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summaries"],
+    "properties": {"summaries": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["n", "summary"],
+        "properties": {"n": {"type": "integer"}, "summary": {"type": "string"}}}}},
+}
+_STOP = set("""a about above after again all also an and any are as at be because been before being
+below between both but by can could did do does doing down during each few for from further had has
+have having he her here hers him his how i if in into is it its itself just me more most my no nor not
+now of off on once only or other our out over own same she should so some such than that the their
+them then there these they this those through to too under until up very was we were what when where
+which while who whom why will with would you your page use used using one two may must also see""".split())
+
+
+def key_terms(texts, count=6):
+    """Distinctive terms per chunk by TF-IDF across the document's chunks (free, local)."""
+    docs = [re.findall(r"[a-zA-Z][a-zA-Z0-9_]{2,}", t.lower()) for t in texts]
+    frequency = {}
+    for words in docs:
+        for word in set(words):
+            frequency[word] = frequency.get(word, 0) + 1
+    out = []
+    for words in docs:
+        counts = {}
+        for word in words:
+            if word not in _STOP:
+                counts[word] = counts.get(word, 0) + 1
+        scored = sorted(counts, key=lambda w: (-counts[w] * math.log((1 + len(docs)) / frequency[w]), w))
+        out.append(scored[:count])
+    return out
 
 
 def context_block(results):

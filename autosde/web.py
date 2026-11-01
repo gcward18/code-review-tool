@@ -347,6 +347,22 @@ class App:
         # Each request (and its background ingest) gets its own connection.
         return Knowledge(connect(self.settings.db_path), embed=embed, scan=scan, create=False)
 
+    def _summarizer(self):
+        """complete(payload, schema) for chunk summaries, using the chat agent's model."""
+        client = self.model_factory()  # RuntimeError (no key) becomes a 503 below
+        override = agents.load_config()["agents"].get("chat", {}).get("model")
+        def complete(payload, schema):
+            reply = client.complete(role="chunk_summary", system=agents.read_prompt("chunk_summary"),
+                                    prompt=payload, schema=schema, max_output_tokens=3000, model=override)
+            used = (reply.input_tokens, reply.output_tokens)
+            if not reply.ok:
+                return None, used
+            try:
+                return json.loads(reply.text), used
+            except ValueError:
+                return None, used
+        return complete
+
     def knowledge(self, method, parts, body):
         kb = self._knowledge()
         try:
@@ -372,6 +388,14 @@ class App:
                 if method == "POST" and parts[2:] == ["delete"]:
                     kb.delete_document(doc_id)
                     return {"ok": True}
+                if method == "POST" and parts[2:] == ["rename"]:
+                    return kb.rename(doc_id, body.get("name"))
+                if method == "POST" and parts[2:] == ["summarize"]:
+                    positions = body.get("positions")
+                    if positions is not None and (not isinstance(positions, list) or len(positions) > 40
+                                                  or not all(isinstance(p, int) for p in positions)):
+                        raise KnowledgeError("positions must be a list of up to 40 chunk positions.")
+                    return kb.summarize(doc_id, self._summarizer(), positions=positions)
                 if method == "POST" and parts[2:] == ["retry"]:
                     doc = kb.retry(doc_id)
                     threading.Thread(target=kb.reindex, args=([doc],), daemon=True).start()

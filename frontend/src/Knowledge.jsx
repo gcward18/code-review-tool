@@ -222,6 +222,119 @@ function PasteText({ onAdd, onCancel }) {
   );
 }
 
+function ChunkViewer({ chunks, index, onIndex, onClose, onSummarize, busy }) {
+  const chunk = chunks[index];
+  useEffect(() => {
+    const key = (e) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight" && index < chunks.length - 1) onIndex(index + 1);
+      if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [index, chunks.length]);
+  if (!chunk) return null;
+  return (
+    <>
+      <div className="panel-scrim" onClick={onClose} />
+      <section className="panel max chunk-viewer" role="dialog" aria-label={`Chunk ${index + 1}`}>
+        <header className="panel-head">
+          <h3>Chunk {index + 1} of {chunks.length}</h3>
+          <span className="grow" />
+          <button className="secondary" disabled={index === 0} onClick={() => onIndex(index - 1)} aria-label="Previous chunk">← Prev</button>
+          <button className="secondary" disabled={index === chunks.length - 1} onClick={() => onIndex(index + 1)} aria-label="Next chunk">Next →</button>
+          <button className="secondary icon" onClick={onClose} aria-label="Close">✕</button>
+        </header>
+        <div className="panel-body">
+          <div className="small muted">{chunk.heading} · {chunk.tokens} tokens</div>
+          <div className="chunk-summary">
+            <span className="kb-h">Summary</span>
+            {chunk.summary
+              ? <p>{chunk.summary}</p>
+              : onSummarize
+                ? <p className="muted small">Not summarized yet. <button className="secondary small-btn" disabled={busy}
+                    onClick={() => onSummarize([chunk.position])}>{busy ? "Summarizing…" : "Summarize this chunk"}</button></p>
+                : <p className="muted small">Summaries are available for stored chunks.</p>}
+          </div>
+          {chunk.terms?.length > 0 && (
+            <div className="chunk-terms">
+              <span className="kb-h">Key terms</span>
+              <div>{chunk.terms.map((t) => <span key={t} className="badge">{t}</span>)}</div>
+            </div>
+          )}
+          <span className="kb-h">Text</span>
+          <pre className="chunk-full">{chunk.text}</pre>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function ChunkCards({ chunks, onOpen }) {
+  return (
+    <div className="chunks">
+      {chunks.map((c, i) => (
+        <button key={c.position} className={`chunk chunk-card tone-${c.position % 2}`} onClick={() => onOpen(i)}
+          title="Open chunk">
+          <div className="small muted">#{c.position + 1} · {c.heading.split(" > ").slice(-2).join(" > ")} · {c.tokens} tokens</div>
+          <div className="chunk-gist">
+            {c.summary || (c.terms?.length ? <span className="muted">Covers: {c.terms.join(", ")}</span>
+              : <span className="muted">{c.text.slice(0, 140)}…</span>)}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ChunkList({ doc, chunks, onChunks }) {
+  const [viewing, setViewing] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const missing = chunks.filter((c) => !c.summary).length;
+  const reload = async () => onChunks((await api.documentChunks(doc.id)).chunks);
+  const summarize = async (positions) => {
+    setBusy(true);
+    setNote("");
+    let spent = 0;
+    try {
+      for (;;) {  // the server summarizes up to 40 chunks per request
+        const result = await api.summarizeChunks(doc.id, positions);
+        spent += result.input_tokens + result.output_tokens;
+        await reload();
+        if (positions || !result.remaining || !result.summarized) {
+          setNote(result.summarized ? `Summarized · ${spent.toLocaleString()} model tokens` : "The model didn't return summaries; try again.");
+          break;
+        }
+        setNote(`Summarizing… ${result.remaining} left`);
+      }
+    } catch (e) {
+      setNote(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div className="actions chunk-tools">
+        <span className="small muted">{chunks.length} chunks · {missing ? `${missing} without a summary` : "all summarized"}</span>
+        <span className="grow" />
+        {missing > 0 && (
+          <button className="secondary small-btn" disabled={busy} onClick={() => summarize(null)}>
+            {busy ? "Summarizing…" : `Summarize ${missing === chunks.length ? "all" : "the rest"}`}
+          </button>
+        )}
+      </div>
+      {note && <p className="small muted">{note}</p>}
+      <ChunkCards chunks={chunks} onOpen={setViewing} />
+      {viewing !== null && (
+        <ChunkViewer chunks={chunks} index={viewing} onIndex={setViewing} onClose={() => setViewing(null)}
+          onSummarize={summarize} busy={busy} />
+      )}
+    </>
+  );
+}
+
 function Documents({ base, onChanged }) {
   const [uploading, setUploading] = useState([]);
   const [errors, setErrors] = useState([]);
@@ -230,6 +343,8 @@ function Documents({ base, onChanged }) {
   const [drag, setDrag] = useState(false);
   const [pasting, setPasting] = useState(false);
   const [picked, setPicked] = useState([]);
+  const [renaming, setRenaming] = useState(null);
+  const [newName, setNewName] = useState("");
   const input = useRef(null);
   const docs = base.documents;
 
@@ -272,6 +387,16 @@ function Documents({ base, onChanged }) {
     setOpen(doc.id);
     setChunks((await api.documentChunks(doc.id)).chunks);
   };
+  const rename = async (doc) => {
+    try {
+      await api.renameDocument(doc.id, newName.trim());
+      setRenaming(null);
+      if (open === doc.id) setChunks((await api.documentChunks(doc.id)).chunks);
+      onChanged();
+    } catch (e) {
+      setErrors([`${doc.name}: ${e.message}`]);
+    }
+  };
   const toggle = (id) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
   return (
@@ -309,7 +434,15 @@ function Documents({ base, onChanged }) {
                 <tr className={picked.includes(d.id) ? "picked" : ""}>
                   <td><input type="checkbox" aria-label={`Select ${d.name}`} checked={picked.includes(d.id)} onChange={() => toggle(d.id)} /></td>
                   <td>
-                    {d.status === "ready"
+                    {renaming === d.id ? (
+                      <form className="rename" onSubmit={(e) => (e.preventDefault(), rename(d))}>
+                        <input autoFocus value={newName} aria-label="New document name"
+                          onChange={(e) => setNewName(e.target.value)}
+                          onKeyDown={(e) => e.key === "Escape" && setRenaming(null)} />
+                        <button type="submit" className="small-btn" disabled={!newName.trim()}>Save</button>
+                        <button type="button" className="secondary small-btn" onClick={() => setRenaming(null)}>Cancel</button>
+                      </form>
+                    ) : d.status === "ready"
                       ? <button className="linkish" onClick={() => show(d)} title="Show chunks">{open === d.id ? "▾" : "▸"} {d.name}</button>
                       : d.name}
                     {d.error && <div className="small error">{d.error}</div>}
@@ -324,19 +457,13 @@ function Documents({ base, onChanged }) {
                         onChanged();
                       }}>Retry</button>
                     ) : null}
+                    <button className="secondary small-btn" onClick={() => (setRenaming(d.id), setNewName(d.name))}>Rename</button>
                     <button className="secondary danger small-btn" onClick={() => remove([d.id])}>Remove</button>
                   </td>
                 </tr>
                 {open === d.id && (
                   <tr><td colSpan={6}>
-                    <div className="chunks">
-                      {chunks.map((c) => (
-                        <div key={c.position} className="chunk">
-                          <div className="small muted">#{c.position + 1} · {c.heading} · {c.tokens} tokens</div>
-                          <pre>{c.text}</pre>
-                        </div>
-                      ))}
-                    </div>
+                    <ChunkList doc={d} chunks={chunks} onChunks={setChunks} />
                   </td></tr>
                 )}
               </Fragment>
@@ -364,6 +491,7 @@ function ChunkPreview({ base, options }) {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [viewing, setViewing] = useState(null);
   useEffect(() => setStrategy(base.settings.strategy), [base.settings.strategy]);
   const strategies = options?.strategies || {};
   const run = async () => {
@@ -406,12 +534,10 @@ function ChunkPreview({ base, options }) {
             <span>max {result.stats.max_tokens}</span>
             <span>total {result.stats.total_tokens}</span>
           </div>
-          {result.chunks.map((c) => (
-            <div key={c.position} className={`chunk lab-chunk tone-${c.position % 2}`}>
-              <div className="small muted">#{c.position + 1} · {c.heading} · {c.tokens} tokens</div>
-              <pre>{c.text}</pre>
-            </div>
-          ))}
+          <ChunkCards chunks={result.chunks} onOpen={setViewing} />
+          {viewing !== null && (
+            <ChunkViewer chunks={result.chunks} index={viewing} onIndex={setViewing} onClose={() => setViewing(null)} />
+          )}
         </>
       )}
     </>
@@ -436,6 +562,7 @@ function ChunkLab({ base, bases, selected, options }) {
 }
 
 function Tester({ bases, selected }) {
+  const [expanded, setExpanded] = useState([]);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState([]);
   const [results, setResults] = useState(null);
@@ -448,6 +575,7 @@ function Tester({ bases, selected }) {
     setError("");
     try {
       setResults((await api.searchKnowledge(scope, query)).results);
+      setExpanded([]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -473,17 +601,39 @@ function Tester({ bases, selected }) {
       </form>
       {error && <p className="error small">{error}</p>}
       {results?.length === 0 && <p className="muted small">No matching chunks.</p>}
-      {results?.map((r, n) => (
-        <div key={r.id} className="chunk">
-          <div className="small">
-            <b>[{n + 1}]</b> {r.heading} <span className="muted">· {r.knowledge_base}/{r.document}</span>
-          </div>
-          <div className="small muted">
-            score {r.score} · {r.vector !== null ? `vector ${r.vector}` : "no vector match"} · {r.keyword ? "keyword match" : "no keyword match"} · {r.tokens} tokens
-          </div>
-          <pre><Highlight text={r.text} query={query} /></pre>
+      {results?.length > 0 && (
+        <div className="actions result-tools">
+          <span className="small muted">{results.length} retrieved</span>
+          <span className="grow" />
+          <button className="secondary small-btn" onClick={() => setExpanded(results.map((r) => r.id))}>Expand all</button>
+          <button className="secondary small-btn" onClick={() => setExpanded([])}>Collapse all</button>
         </div>
-      ))}
+      )}
+      {results?.map((r, n) => {
+        const isOpen = expanded.includes(r.id);
+        return (
+          <div key={r.id} className={`chunk result ${isOpen ? "open" : ""}`}>
+            <button className="result-head" aria-expanded={isOpen}
+              onClick={() => setExpanded(isOpen ? expanded.filter((x) => x !== r.id) : [...expanded, r.id])}>
+              <span className="twisty-mark">{isOpen ? "▾" : "▸"}</span>
+              <span className="grow">
+                <span className="small"><b>[{n + 1}]</b> {r.heading.split(" > ").slice(-2).join(" > ")}
+                  <span className="muted"> · {r.knowledge_base}/{r.document}</span></span>
+                <span className="result-gist">{r.summary || `${r.text.slice(0, 160).replace(/\s+/g, " ")}…`}</span>
+              </span>
+              <span className="small muted result-score">{r.score}</span>
+            </button>
+            {isOpen && (
+              <>
+                <div className="small muted">
+                  {r.vector !== null ? `vector ${r.vector}` : "no vector match"} · {r.keyword ? "keyword match" : "no keyword match"} · {r.tokens} tokens
+                </div>
+                <pre><Highlight text={r.text} query={query} /></pre>
+              </>
+            )}
+          </div>
+        );
+      })}
     </>
   );
 }

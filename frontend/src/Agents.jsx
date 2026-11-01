@@ -8,6 +8,7 @@ const PROMPTS = [
   ["specialist", "Specialist", "Shared by every specialist. Keep {agent} and {focus}."],
   ["aggregator", "Aggregator", "Removes duplicates and weak findings."],
   ["chat", "Chat", "Answers questions about a project's review history."],
+  ["chunk_summary", "Chunk summaries", "Writes the one-line summary for each knowledge base chunk."],
 ];
 
 const clone = (value) => JSON.parse(JSON.stringify(value));

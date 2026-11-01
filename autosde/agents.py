@@ -23,7 +23,8 @@ SPECIALISTS = {
 }
 ROLES = ("coordinator", *SPECIALISTS, "aggregator", "chat")
 SYSTEM_PROMPTS = {"coordinator": "coordinator.md", "aggregator": "aggregator.md",
-                  "specialist": "specialist.md", "chat": "chat.md"}
+                  "specialist": "specialist.md", "chat": "chat.md",
+                  "chunk_summary": "chunk_summary.md"}
 _EXT = re.compile(r"\.[A-Za-z0-9_+-]{1,16}")
 _MODEL = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 LANGSMITH_ENDPOINTS = ("https://api.smith.langchain.com", "https://eu.api.smith.langchain.com")

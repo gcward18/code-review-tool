@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 import tempfile
@@ -136,6 +137,60 @@ class LabTests(unittest.TestCase):
         self.calls.clear()
         self.kb.ingest(doc, b"# A\n\nSome text.")
         self.assertEqual(self.calls, [("text-embedding-ada-002", None)])
+
+
+class ChunkDetailTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = Store(Path(tmp.name) / "k.db")
+        self.kb = Knowledge(self.store.db, embed=ScriptedModel({}).embed, scan=clean_scan)
+        self.base = self.kb.create("detail", settings={"chunk_tokens": 100})
+        self.doc = self.kb.add_document(self.base["id"], "doc.md", DOC.encode())
+        self.kb.ingest(self.doc, DOC.encode())
+
+    def test_chunks_carry_distinctive_key_terms(self):
+        chunks = self.kb.chunks(self.doc)
+        rounding = next(c for c in chunks if c["heading"].endswith("Rounding"))
+        self.assertIn("decimal", rounding["terms"])
+        self.assertTrue(all(len(c["terms"]) <= 6 for c in chunks))
+        self.assertIsNone(rounding["summary"])
+
+    def test_summaries_are_batched_cached_and_stop_on_failure(self):
+        calls = []
+
+        def complete(payload, schema):
+            numbers = [c["n"] for c in json.loads(payload)["chunks"]]
+            calls.append(numbers)
+            return {"summaries": [{"n": n, "summary": f"Covers part {n}."} for n in numbers]}, (10, 5)
+        total = len(self.kb.chunks(self.doc))
+        first = self.kb.summarize(self.doc, complete, limit=3, batch=2)
+        self.assertEqual((first["summarized"], first["remaining"]), (3, total - 3))
+        self.assertEqual(calls, [[1, 2], [3]])
+        self.kb.summarize(self.doc, complete)
+        self.assertTrue(all(c["summary"] for c in self.kb.chunks(self.doc)))
+        calls.clear()
+        self.assertEqual(self.kb.summarize(self.doc, complete)["summarized"], 0)  # cached
+        self.assertEqual(calls, [])
+        one = self.kb.summarize(self.doc, lambda p, s: ({"summaries": [{"n": 1, "summary": "Redone."}]}, (1, 1)),
+                                positions=[0])
+        self.assertEqual((one["summarized"], self.kb.chunks(self.doc)[0]["summary"]), (1, "Redone."))
+        found = self.kb.search([self.base["id"]], "rounding decimal currency")
+        self.assertTrue(found[0]["summary"])
+
+        failed = Knowledge(self.store.db, embed=ScriptedModel({}).embed, scan=clean_scan)
+        self.store.db.execute("UPDATE kb_chunks SET summary = NULL")
+        result = failed.summarize(self.doc, lambda p, s: (None, (5, 0)), batch=2)
+        self.assertEqual(result["summarized"], 0)  # stopped after the first failed call
+
+    def test_rename_updates_headings_keyword_index_and_keeps_the_type(self):
+        renamed = self.kb.rename(self.doc, "billing guide")
+        self.assertEqual(renamed["name"], "billing guide.md")
+        self.assertTrue(all(c["heading"].startswith("billing guide.md") for c in self.kb.chunks(self.doc)))
+        hit = self.kb.search([self.base["id"]], "billing guide")
+        self.assertEqual(hit[0]["document"], "billing guide.md")
+        with self.assertRaises(KnowledgeError):
+            self.kb.rename(self.doc, "   ")
 
 
 class OldSettingsTests(unittest.TestCase):

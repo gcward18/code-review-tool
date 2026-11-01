@@ -100,6 +100,46 @@ function Tree({ selected, onSelect }) {
   );
 }
 
+// Search across every repository under your home folder; the tree when empty.
+function Workspaces({ selected, onSelect }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
+  useEffect(() => {
+    if (!query.trim()) return setResults(null);
+    let live = true;
+    const timer = setTimeout(() => {
+      api.search(query).then((data) => live && setResults(data.results))
+        .catch(() => live && setResults([]));
+    }, 200);
+    return () => { live = false; clearTimeout(timer); };
+  }, [query]);
+  return (
+    <>
+      <input className="search" type="search" value={query} placeholder="Search repositories"
+        onChange={(e) => setQuery(e.target.value)} aria-label="Search repositories" />
+      {results === null ? (
+        <Tree selected={selected} onSelect={onSelect} />
+      ) : results.length === 0 ? (
+        <p className="muted small">No repositories match.</p>
+      ) : (
+        <ul className="tree">
+          {results.map((r) => (
+            <li key={r.path}>
+              <div className={`node ${selected === r.path ? "selected" : ""}`} title={r.path}
+                onClick={() => onSelect(r.path)}>
+                <span className="name">◆ {r.name}
+                  <span className="muted small"> {r.path.split("/").slice(-2, -1)[0]}</span>
+                </span>
+                {r.project_id && <span className="badge">reviewed</span>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
 // --- range picker -------------------------------------------------------------
 
 function Options({ items }) {
@@ -516,7 +556,7 @@ export default function App() {
       <header>
         <button className="menu" onClick={() => setDrawer(!drawer)} aria-label="Folders">☰</button>
         <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>AutoSDE</a>
-        <span className="muted small grow">{session ? `model: ${session.model}` : ""}</span>
+        <span className="grow" />
         <a href="#" className={view.kind === "agents" ? "active" : ""}
           onClick={(e) => (e.preventDefault(), go({ kind: "agents" }))}>Agents</a>
         <select value={theme} onChange={(e) => setTheme(e.target.value)} aria-label="Theme">
@@ -524,8 +564,8 @@ export default function App() {
         </select>
       </header>
       <aside className={drawer ? "open" : ""}>
-        <h3>Folders</h3>
-        {session && <Tree selected={view.repo} onSelect={(repo) => go({ kind: "repo", repo })} />}
+        <h3>Workspaces</h3>
+        {session && <Workspaces selected={view.repo} onSelect={(repo) => go({ kind: "repo", repo })} />}
       </aside>
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
       <main>

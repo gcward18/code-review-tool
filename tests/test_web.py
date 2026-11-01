@@ -74,6 +74,22 @@ class WebTests(unittest.TestCase):
                 self.get("/api/tree", path=outside)
             self.assertEqual(self.status(error), 400)
 
+    def test_search_finds_repositories_and_skips_unreadable_folders(self):
+        nested = Path(self.tmp.name) / "work" / "api"
+        nested.mkdir(parents=True)
+        git(nested, "init", "-q")
+        locked = Path(self.tmp.name) / "locked"
+        locked.mkdir()
+        locked.chmod(0)  # like a folder macOS has not approved
+        try:
+            names = [r["name"] for r in self.get("/api/search", q="")["results"]]
+            self.assertEqual(sorted(names), ["api", "calculator"])
+            self.assertEqual([r["name"] for r in self.get("/api/search", q="CALC")["results"]],
+                             ["calculator"])
+            self.assertNotIn("locked", [e["name"] for e in self.get("/api/tree")["entries"]])
+        finally:
+            locked.chmod(0o755)
+
     def test_to_lists_only_commits_older_than_from(self):
         git(self.repo, "checkout", "-qb", "feature")
         for n in range(2):

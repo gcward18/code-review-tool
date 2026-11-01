@@ -6,9 +6,11 @@ per-start token, so other websites cannot trigger paid reviews.
 
 import json
 import mimetypes
+import os
 import re
 import secrets
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +20,8 @@ from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, approve, cancel, prepare
 
 STATIC = Path(__file__).parent / "static"
+# Never listed or searched: system data and dependency folders.
+SKIP = {"Library", "node_modules", "__pycache__", "venv", "Applications"}
 
 
 class ApiError(Exception):
@@ -36,6 +40,7 @@ class App:
         # Plans awaiting approval; their file contents exist only here, in memory.
         self.pending, self._lock = {}, threading.Lock()
         self.planning = set()  # ids this process is still planning
+        self._repos = None  # (found_at, [paths]) from the last repository walk
         self._models = None  # cached model list; fetched once per start
 
     def models(self):
@@ -71,13 +76,61 @@ class App:
             raise ApiError(400, "That repository is outside your home folder.")
         return root
 
+    @staticmethod
+    def _readable(path):
+        """False for folders macOS has not approved for this app (or that we cannot list)."""
+        try:
+            with os.scandir(path):
+                return True
+        except OSError:
+            return False
+
+    def repositories(self):
+        """Git repositories under the browse root, found by a bounded walk, cached briefly."""
+        if self._repos and time.monotonic() - self._repos[0] < 60:
+            return self._repos[1]
+        found, deadline = [], time.monotonic() + 5
+        stack = [(self.browse_root, 0)]
+        while stack and time.monotonic() < deadline and len(found) < 1000:
+            folder, depth = stack.pop()
+            try:
+                with os.scandir(folder) as entries:
+                    children = [e for e in entries if e.is_dir(follow_symlinks=False)]
+            except OSError:
+                continue  # not approved or unreadable
+            if any(e.name == ".git" for e in children):
+                found.append(str(folder))
+                continue
+            if depth < 5:
+                stack += [(Path(e.path), depth + 1) for e in children
+                          if not e.name.startswith(".") and e.name not in SKIP]
+        self._repos = (time.monotonic(), sorted(found, key=str.lower))
+        return self._repos[1]
+
+    def search(self, query):
+        """Repositories and reviewed projects whose name or path contains the query."""
+        query = (query or "").strip().lower()
+        known = {p["path"]: p for p in self.store.projects()}
+        paths = dict.fromkeys(self.repositories())
+        for path in known:
+            if self._inside(path) is not None:
+                paths.setdefault(path)
+        results = [
+            {"name": Path(path).name, "path": path, "project_id": known.get(path, {}).get("id")}
+            for path in paths
+            if not query or query in Path(path).name.lower() or query in path.lower()
+        ]
+        results.sort(key=lambda r: (r["project_id"] is None, r["name"].lower()))
+        return {"results": results[:100]}
+
     def tree(self, raw):
         path = self._inside(raw)
         if path is None:
             raise ApiError(400, "Folder outside your home folder.")
         try:
             folders = sorted(
-                (p for p in path.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                (p for p in path.iterdir() if p.is_dir() and not p.name.startswith(".")
+                 and p.name not in SKIP and self._readable(p)),
                 key=lambda p: p.name.lower(),
             )[:500]
         except PermissionError:
@@ -282,6 +335,8 @@ def handler_for(app):
                 if path == "/api/session":
                     return self._json(200, {"token": app.token, "model": app.settings.model,
                                             "root": str(app.browse_root)})
+                if path == "/api/search":
+                    return self._json(200, app.search(query.get("q")))
                 if path == "/api/tree":
                     return self._json(200, app.tree(query.get("path")))
                 if path == "/api/repo":

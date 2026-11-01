@@ -21,6 +21,7 @@ export const api = {
     token = data.token;
     return data;
   },
+  search: (text) => call(`/api/search?${q({ q: text })}`),
   tree: (path) => call(`/api/tree?${q(path ? { path } : {})}`),
   repo: (path) => call(`/api/repo?${q({ path })}`),
   older: (path, from) => call(`/api/older?${q({ path, from })}`),

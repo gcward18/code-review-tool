@@ -132,3 +132,4 @@ pre.fix div { padding: 0 12px; white-space: pre; }
 pre.fix .add { background: color-mix(in srgb, var(--ok) 18%, transparent); }
 pre.fix .del { background: color-mix(in srgb, var(--error) 18%, transparent); }
 pre.fix .hunk { color: var(--muted); }
+.search { margin: 0 4px 10px; width: calc(100% - 8px); }

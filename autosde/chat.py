@@ -30,15 +30,46 @@ def _history(store, project_id):
     return reviews
 
 
-def ask(store, model, project, question, *, scan, config=None):
+def _all_projects(store, repositories):
+    """Every repository on the machine: git metadata, plus review history where reviewed."""
+    reviewed = {p["path"]: p for p in store.projects()}
+    projects, budget = [], MAX_HISTORY_CHARS
+    for repo in repositories:
+        entry = {"name": repo["name"], "path": repo["path"], **repo.get("git", {})}
+        known = reviewed.get(repo["path"])
+        if known:
+            entry["reviews"] = [
+                {"id": r["id"], "range": r["range_spec"], "status": r["status"],
+                 "summary": r["summary"],
+                 "kept_findings": [f"{f['file']}:{f['start_line']} {f['severity']} {f['title']}"
+                                   for f in r["findings"] if f["kept"]]}
+                for r in store.history(known["id"], limit=10)
+            ]
+        size = len(json.dumps(entry))
+        if size > budget:
+            entry = {"name": repo["name"], "path": repo["path"], "omitted": "history too large"}
+            size = len(json.dumps(entry))
+        budget -= size
+        projects.append(entry)
+    return projects
+
+
+def ask(store, model, project, question, *, scan, config=None, repositories=None):
+    """`project` None asks about every repository in `repositories` (the Home chat)."""
     question = (question or "").strip()
     if not question or len(question) > 4000:
         raise ChatError("Ask a question under 4,000 characters.")
     config = config or load_config()
-    turns = store.chat(project["id"])[-MAX_TURNS:]
+    key = project["id"] if project else None
+    turns = store.chat(key)[-MAX_TURNS:]
+    context = (
+        {"scope": "project", "project": {"name": project["name"]},
+         "reviews": _history(store, project["id"])}
+        if project else
+        {"scope": "all projects", "projects": _all_projects(store, repositories or [])}
+    )
     payload = json.dumps({
-        "project": {"name": project["name"]},
-        "reviews": _history(store, project["id"]),
+        **context,
         "conversation": [{"role": t["role"], "content": t["content"]} for t in turns],
         "question": question,
     })
@@ -54,7 +85,7 @@ def ask(store, model, project, question, *, scan, config=None):
     except (ValueError, KeyError, TypeError):
         raise ChatError("The chat agent replied in an unexpected format.") from None
     used = override or getattr(model, "model", None)
-    store.add_chat(project["id"], "user", question)
-    store.add_chat(project["id"], "assistant", answer, model=used,
+    store.add_chat(key, "user", question)
+    store.add_chat(key, "assistant", answer, model=used,
                    input_tokens=reply.input_tokens, output_tokens=reply.output_tokens)
-    return store.chat(project["id"])
+    return store.chat(key)

@@ -21,6 +21,9 @@ export const api = {
     token = data.token;
     return data;
   },
+  homeChat: () => call("/api/chat"),
+  askHome: (message) => call("/api/chat", { method: "POST", body: JSON.stringify({ message }) }),
+  clearHomeChat: () => call("/api/chat/clear", { method: "POST", body: "{}" }),
   chat: (id) => call(`/api/projects/${id}/chat`),
   ask: (id, message) =>
     call(`/api/projects/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }),

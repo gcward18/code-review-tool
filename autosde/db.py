@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     output_tokens INTEGER DEFAULT 0,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS home_chat (     -- the Home page chat about all projects
+    id INTEGER PRIMARY KEY,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    model TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    created_at REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS chat_project ON chat_messages(project_id, id);
 CREATE INDEX IF NOT EXISTS files_review ON review_files(review_id);
 CREATE INDEX IF NOT EXISTS reviews_project ON reviews(project_id, started_at);
@@ -240,19 +249,30 @@ class Store:
                 " ORDER BY kept DESC, id", review["id"])
         return reviews
 
+    # project_id None is the Home chat about all projects.
     def chat(self, project_id):
-        return self._all("SELECT role, content, model, input_tokens, output_tokens, created_at"
-                         " FROM chat_messages WHERE project_id = ? ORDER BY id", project_id)
+        columns = "role, content, model, input_tokens, output_tokens, created_at"
+        if project_id is None:
+            return self._all(f"SELECT {columns} FROM home_chat ORDER BY id")
+        return self._all(f"SELECT {columns} FROM chat_messages WHERE project_id = ? ORDER BY id",
+                         project_id)
 
     def add_chat(self, project_id, role, content, *, model=None, input_tokens=0,
                  output_tokens=0):
-        self.db.execute(
-            "INSERT INTO chat_messages(project_id, role, content, model, input_tokens,"
-            " output_tokens, created_at) VALUES (?,?,?,?,?,?,?)",
-            (project_id, role, content, model, input_tokens, output_tokens, time.time()))
+        values = (role, content, model, input_tokens, output_tokens, time.time())
+        if project_id is None:
+            self.db.execute("INSERT INTO home_chat(role, content, model, input_tokens,"
+                            " output_tokens, created_at) VALUES (?,?,?,?,?,?)", values)
+        else:
+            self.db.execute("INSERT INTO chat_messages(project_id, role, content, model,"
+                            " input_tokens, output_tokens, created_at) VALUES (?,?,?,?,?,?,?)",
+                            (project_id, *values))
 
     def clear_chat(self, project_id):
-        self.db.execute("DELETE FROM chat_messages WHERE project_id = ?", (project_id,))
+        if project_id is None:
+            self.db.execute("DELETE FROM home_chat")
+        else:
+            self.db.execute("DELETE FROM chat_messages WHERE project_id = ?", (project_id,))
 
     def find_project(self, ref):
         """A project by numeric id, exact name or path."""

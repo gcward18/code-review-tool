@@ -98,6 +98,25 @@ def refs(repo, *, limit=50):
     return branches, commits
 
 
+def summary(repo, *, commits=5):
+    """Metadata only, for the all-projects chat: branch, recent commit subjects, languages."""
+    text = lambda *args: _git(repo, *args, check=False).decode("utf-8", "replace").strip()
+    files = text("ls-files").splitlines()
+    extensions = {}
+    for name in files:
+        suffix = Path(name).suffix.lower() or Path(name).name
+        extensions[suffix] = extensions.get(suffix, 0) + 1
+    log = text("log", f"-n{commits}", "--format=%cs %s", "HEAD")
+    return {
+        "branch": text("rev-parse", "--abbrev-ref", "HEAD") or None,
+        "branches": len(text("for-each-ref", "--format=x", "refs/heads").splitlines()),
+        "commits": int(text("rev-list", "--count", "HEAD") or 0),
+        "tracked_files": len(files),
+        "top_file_types": dict(sorted(extensions.items(), key=lambda kv: -kv[1])[:6]),
+        "recent_commits": log.splitlines(),
+    }
+
+
 def resolve_ref(repo, ref):
     """Commit SHA for a branch or ref, or None."""
     if ref.startswith("-"):

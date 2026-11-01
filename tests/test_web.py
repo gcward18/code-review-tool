@@ -159,6 +159,13 @@ class WebTests(unittest.TestCase):
             self.post(f"/api/projects/{project}/chat", {"message": "x"}, token="wrong")
         self.assertEqual(self.status(error), 403)
 
+    def test_home_chat_round_trip(self):
+        with patch("autosde.web.scanner", return_value=clean_scan):
+            reply = self.post("/api/chat", {"message": "Which repos are here?"})
+        self.assertEqual(reply["messages"][-1]["content"], "One finding.")
+        self.assertEqual(len(self.get("/api/chat")["messages"]), 2)
+        self.assertEqual(self.post("/api/chat/clear", {})["messages"], [])
+
     def test_cancel_and_expiry(self):
         base = git(self.repo, "rev-parse", "HEAD~1")
         with patch("autosde.review.scanner", return_value=clean_scan):

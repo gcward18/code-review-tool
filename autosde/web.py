@@ -303,12 +303,25 @@ class App:
             raise ApiError(404, "No such project.")
         return project
 
+    def machine(self):
+        """Every readable repository with git metadata, for the Home chat."""
+        spaces = self.workspaces()
+        repos = spaces["recent"] + spaces["available"]
+        for repo in repos:
+            try:
+                repo["git"] = git.summary(repo["path"])
+            except Exception:
+                repo["git"] = {"unavailable": True}
+        return repos
+
     def chat(self, project_id, body):
-        project = self._project_or_404(project_id)
+        project = self._project_or_404(project_id) if project_id is not None else None
         try:
             scan = scanner(self.settings.gitleaks)
+            repositories = None if project else self.machine()
             return {"messages": chat.ask(self.store, self.model_factory(), project,
-                                         body.get("message"), scan=scan)}
+                                         body.get("message"), scan=scan,
+                                         repositories=repositories)}
         except (chat.ChatError, ScanUnavailable) as error:
             raise ApiError(400, str(error)) from None
         except RuntimeError:
@@ -381,6 +394,8 @@ def handler_for(app):
                     return self._json(200, app.models())
                 if path == "/api/agents":
                     return self._json(200, agents.snapshot())
+                if path == "/api/chat":
+                    return self._json(200, {"messages": app.store.chat(None)})
                 if path == "/api/agent-runs":
                     return self._json(200, app.store.agents())
                 if path == "/api/projects":
@@ -422,6 +437,11 @@ def handler_for(app):
             try:
                 if self.path == "/api/reviews":
                     return self._json(202, app.submit(body))
+                if self.path == "/api/chat":
+                    return self._json(200, app.chat(None, body))
+                if self.path == "/api/chat/clear":
+                    app.store.clear_chat(None)
+                    return self._json(200, {"messages": []})
                 if m := re.fullmatch(r"/api/projects/(\d+)/chat", self.path):
                     return self._json(200, app.chat(int(m[1]), body))
                 if m := re.fullmatch(r"/api/projects/(\d+)/chat/clear", self.path):

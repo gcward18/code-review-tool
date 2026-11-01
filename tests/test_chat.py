@@ -45,6 +45,27 @@ class ChatTests(unittest.TestCase):
             chat.ask(self.store, model, self.project, "hello", scan=clean_scan)  # no reply
         self.assertEqual(self.store.chat(self.project["id"]), [])
 
+    def test_home_chat_sees_every_repository_and_keeps_its_own_history(self):
+        from autosde import git
+
+        repos = [{"name": "calculator", "path": self.project["path"],
+                  "git": git.summary(self.project["path"])},
+                 {"name": "other", "path": "/elsewhere/other", "git": {"commits": 3}}]
+        model = ScriptedModel({"chat": [{"answer": "calculator has one open finding."}]})
+        messages = chat.ask(self.store, model, None, "What needs attention?", scan=clean_scan,
+                            repositories=repos)
+        self.assertEqual(messages[-1]["content"], "calculator has one open finding.")
+        sent = json.loads(model.calls[0]["prompt"])
+        self.assertEqual(sent["scope"], "all projects")
+        calc, other = sent["projects"]
+        self.assertEqual(calc["commits"], 2)
+        self.assertIn(".py", calc["top_file_types"])
+        self.assertIn("Total is overwritten", calc["reviews"][0]["kept_findings"][0])
+        self.assertNotIn("reviews", other)
+        self.assertEqual(self.store.chat(self.project["id"]), [])  # separate from project chats
+        self.store.clear_chat(None)
+        self.assertEqual(self.store.chat(None), [])
+
 
 if __name__ == "__main__":
     unittest.main()

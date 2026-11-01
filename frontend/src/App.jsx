@@ -470,34 +470,24 @@ function Home({ onOpen, onProject }) {
     api.projects().then(setProjects);
     api.reviews().then(setReviews);
   }, []);
+  const projectTable = projects.length ? (
+    <table>
+      <thead><tr><th>Project</th><th>Reviews</th><th>Last review</th></tr></thead>
+      <tbody>
+        {projects.map((p) => (
+          <tr key={p.id} className="clickable" onClick={() => onProject(p.id)}>
+            <td>{p.name}</td><td>{p.reviews}</td><td className="small">{ago(p.last_review)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  ) : <p className="muted">None yet. Pick a project in the sidebar to start a review.</p>;
   return (
-    <>
-      <div className="card intro">
-        <h2>Pick a repository</h2>
-        <p className="muted">Search or pick a project in the sidebar to choose a commit range.</p>
-      </div>
-      <div className="card">
-        <h3>Projects</h3>
-        {projects.length ? (
-          <table>
-            <thead><tr><th>Project</th><th>Reviews</th><th>Last review</th></tr></thead>
-            <tbody>
-              {projects.map((p) => (
-                <tr key={p.id} className="clickable" onClick={() => onProject(p.id)}>
-                  <td>{p.name}</td><td>{p.reviews}</td><td className="small">{ago(p.last_review)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="muted">None yet.</p>
-        )}
-      </div>
-      <div className="card">
-        <h3>Recent reviews</h3>
-        <ReviewTable reviews={reviews} onOpen={onOpen} />
-      </div>
-    </>
+    <Workspace
+      topLeft={<Chat />}
+      topRight={<Panel title={`Projects (${projects.length})`}>{projectTable}</Panel>}
+      bottomRight={<Panel title="Recent reviews"><ReviewTable reviews={reviews} onOpen={onOpen} /></Panel>}
+    />
   );
 }
 
@@ -520,14 +510,17 @@ function Message({ role, text }) {
   return role === "user" ? <p className="said">{text}</p> : <Markdown text={text} />;
 }
 
+// projectId omitted: the Home chat about every project on this machine.
 function Chat({ projectId }) {
+  const home = projectId === undefined;
   const [messages, setMessages] = useState(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const end = useRef(null);
   useEffect(() => {
-    api.chat(projectId).then((d) => setMessages(d.messages)).catch((e) => setError(e.message));
+    (home ? api.homeChat() : api.chat(projectId))
+      .then((d) => setMessages(d.messages)).catch((e) => setError(e.message));
   }, [projectId]);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "nearest" });
@@ -542,7 +535,7 @@ function Chat({ projectId }) {
     setMessages((m) => [...(m || []), { role: "user", content: text, pending: true }]);
     setDraft("");
     try {
-      setMessages((await api.ask(projectId, text)).messages);
+      setMessages((await (home ? api.askHome(text) : api.ask(projectId, text))).messages);
     } catch (err) {
       setError(err.message);
       setMessages((m) => m.filter((x) => !x.pending));
@@ -553,15 +546,19 @@ function Chat({ projectId }) {
   };
 
   const clear = messages?.length > 0 && (
-    <button className="secondary" onClick={() => api.clearChat(projectId).then((d) => setMessages(d.messages))}>
+    <button className="secondary"
+      onClick={() => (home ? api.clearHomeChat() : api.clearChat(projectId)).then((d) => setMessages(d.messages))}>
       Clear
     </button>
   );
   return (
-    <Panel title="Chat about this project's history" actions={clear} className="chat">
+    <Panel title={home ? "Chat about all your projects" : "Chat about this project's history"}
+      actions={clear} className="chat">
       <div className="messages">
         {messages?.length === 0 && (
-          <p className="muted small">Ask about past reviews, e.g. "Which files keep getting findings?" or "What did review #10 find?"</p>
+          <p className="muted small">{home
+            ? "Ask about any repository on this machine, e.g. \"Which projects have open critical findings?\" or \"Which repos changed this week?\""
+            : "Ask about past reviews, e.g. \"Which files keep getting findings?\" or \"What did review #10 find?\""}</p>
         )}
         {messages?.map((m, i) => (
           <div key={i} className={`msg ${m.role}`}>

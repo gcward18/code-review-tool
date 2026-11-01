@@ -218,8 +218,13 @@ class App:
         if r["status"] == "awaiting_approval" and orphan:
             self.store.cancel_review(review_id, status="expired")
             r = self.store.review(review_id)
-        running = r["status"] in ("planning", "running")
-        approval = self.approval(r) if r["status"] == "awaiting_approval" else ""
+        with self._lock:
+            ready = review_id in self.pending  # plan saved but not yet handed over: still planning
+        awaiting = r["status"] == "awaiting_approval" and ready
+        running = r["status"] in ("planning", "running") or (
+            r["status"] == "awaiting_approval" and not ready
+        )
+        approval = self.approval(r) if awaiting else ""
         runs = rows(r["agent_runs"], [
             ("Role", lambda a: esc(a["role"])), ("Agent", lambda a: esc(a["agent"])),
             ("Status", lambda a: f'<span class="{"ok" if a["status"] == "ok" else "error"}">{esc(a["status"])}</span>'

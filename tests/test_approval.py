@@ -176,6 +176,10 @@ class WebApprovalTests(Fixture):
                          "This form has expired; reload the page.")
         self.assertIsNone(app.decide(pending.review_id, {"token": [app.token]}, approved=False))
         self.assertEqual(self.store.review(pending.review_id)["status"], "cancelled")
+        handing_over = self.prepare(self.model())  # saved, not yet registered by this process
+        app.planning.add(handing_over.review_id)
+        self.assertIn("Waiting for the team", app.review(handing_over.review_id))
+        self.assertEqual(self.store.review(handing_over.review_id)["status"], "awaiting_approval")
         orphan = self.prepare(self.model())  # never registered: e.g. after a restart
         app.review(orphan.review_id)
         self.assertEqual(self.store.review(orphan.review_id)["status"], "expired")

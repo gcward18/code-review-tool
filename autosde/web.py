@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from autosde import agents, chat, git, report
-from autosde.knowledge import Knowledge, KnowledgeError
+from autosde.knowledge import Knowledge, KnowledgeError, connect
 from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, approve, cancel, prepare
 from autosde.scan import ScanUnavailable, scanner
@@ -46,6 +46,7 @@ class App:
         self.planning = set()  # ids this process is still planning
         self._repos = None  # (found_at, [paths]) from the last repository walk
         self._models = None  # cached model list; fetched once per start
+        Knowledge(store.db, embed=None, scan=None)  # create the knowledge tables once
 
     def models(self):
         """Models for the Agents page: the key's text models, or what is configured."""
@@ -343,7 +344,8 @@ class App:
             return client.embed(texts, model, dimensions)
         def scan(text):  # gitleaks is only needed when a document is embedded
             return scanner(self.settings.gitleaks)(text)
-        return Knowledge(self.store.db, embed=embed, scan=scan)
+        # Each request (and its background ingest) gets its own connection.
+        return Knowledge(connect(self.settings.db_path), embed=embed, scan=scan, create=False)
 
     def knowledge(self, method, parts, body):
         kb = self._knowledge()

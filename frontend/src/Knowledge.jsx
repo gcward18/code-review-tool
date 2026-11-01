@@ -132,67 +132,133 @@ function Strategy({ base, onSaved, onDeleted }) {
   );
 }
 
+const textToBase64 = (text) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+
+function PasteText({ onAdd, onCancel }) {
+  const [name, setName] = useState("");
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    const file = /\.[a-z0-9]+$/i.test(name.trim()) ? name.trim() : `${name.trim() || "note"}.md`;
+    await onAdd(file, text);
+    setBusy(false);
+  };
+  return (
+    <form className="card-inset kb-paste" onSubmit={submit}>
+      <label className="field">
+        <span className="small">Document name</span>
+        <input autoFocus value={name} placeholder="error-handling-guidelines.md" onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label className="field">
+        <span className="small">Content <span className="muted">· Markdown or plain text</span></span>
+        <textarea rows={8} value={text} placeholder={"# Error handling\n\nNever swallow exceptions…"} onChange={(e) => setText(e.target.value)} />
+      </label>
+      <div className="actions">
+        <button type="submit" disabled={busy || !text.trim()}>{busy ? "Adding…" : "Add document"}</button>
+        <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
 function Documents({ base, onChanged }) {
   const [uploading, setUploading] = useState([]);
-  const [error, setError] = useState("");
+  const [errors, setErrors] = useState([]);
   const [open, setOpen] = useState(null);
   const [chunks, setChunks] = useState([]);
   const [drag, setDrag] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [picked, setPicked] = useState([]);
   const input = useRef(null);
+  const docs = base.documents;
 
-  const upload = async (files) => {
-    setError("");
-    for (const file of files) {
-      if (file.size > 5e6) {
-        setError(`${file.name} is over 5 MB.`);
-        continue;
-      }
-      setUploading((u) => [...u, file.name]);
-      try {
-        await api.uploadDocument(base.id, file.name, await toBase64(file));
-      } catch (e) {
-        setError(`${file.name}: ${e.message}`);
-      } finally {
-        setUploading((u) => u.filter((n) => n !== file.name));
-        onChanged();
-      }
+  const send = async (name, data) => {
+    setUploading((u) => [...u, name]);
+    try {
+      await api.uploadDocument(base.id, name, data);
+      return true;
+    } catch (e) {
+      setErrors((list) => [...list, `${name}: ${e.message}`]);
+      return false;
+    } finally {
+      setUploading((u) => u.filter((n) => n !== name));
+      onChanged();
     }
+  };
+  const upload = async (files) => {
+    setErrors([]);
+    for (const file of files) {
+      if (file.size > 5e6) setErrors((list) => [...list, `${file.name}: over 5 MB.`]);
+      else await send(file.name, await toBase64(file));
+    }
+  };
+  const addText = async (name, text) => {
+    setErrors([]);
+    if (await send(name, textToBase64(text))) setPasting(false);
+  };
+  const remove = async (ids) => {
+    const names = docs.filter((d) => ids.includes(d.id)).map((d) => d.name);
+    const label = names.length === 1 ? `"${names[0]}"` : `${names.length} documents`;
+    if (!window.confirm(`Remove ${label} and their embeddings from ${base.name}?`)) return;
+    setErrors([]);
+    for (const id of ids) await api.deleteDocument(id);
+    setPicked([]);
+    if (ids.includes(open)) setOpen(null);
+    onChanged();
   };
   const show = async (doc) => {
     if (open === doc.id) return setOpen(null);
     setOpen(doc.id);
     setChunks((await api.documentChunks(doc.id)).chunks);
   };
+  const toggle = (id) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
   return (
-    <>
-      <div className={`dropzone ${drag ? "over" : ""}`} onClick={() => input.current.click()}
-        onDragOver={(e) => (e.preventDefault(), setDrag(true))} onDragLeave={() => setDrag(false)}
-        onDrop={(e) => (e.preventDefault(), setDrag(false), upload([...e.dataTransfer.files]))}>
-        <b>Drop documents here</b> or click to choose
-        <span className="small muted">Markdown, text, code, HTML, JSON, CSV or .docx · up to 5 MB · scanned by gitleaks before embedding</span>
-        <input ref={input} type="file" multiple accept={ACCEPT} hidden onChange={(e) => (upload([...e.target.files]), (e.target.value = ""))} />
+    <div className={`kb-docs-wrap ${drag ? "over" : ""}`}
+      onDragOver={(e) => (e.preventDefault(), setDrag(true))} onDragLeave={(e) => e.currentTarget === e.target && setDrag(false)}
+      onDrop={(e) => (e.preventDefault(), setDrag(false), upload([...e.dataTransfer.files]))}>
+      <div className="actions kb-toolbar">
+        <button onClick={() => input.current.click()}>⬆ Upload files</button>
+        <button className="secondary" onClick={() => setPasting(!pasting)}>✎ Paste text</button>
+        <span className="grow" />
+        {picked.length > 0 && (
+          <button className="secondary danger" onClick={() => remove(picked)}>Remove selected ({picked.length})</button>
+        )}
+        <input ref={input} type="file" multiple accept={ACCEPT} hidden
+          onChange={(e) => (upload([...e.target.files]), (e.target.value = ""))} />
       </div>
-      {error && <p className="error small">{error}</p>}
+      {pasting && <PasteText onAdd={addText} onCancel={() => setPasting(false)} />}
+      {errors.map((m) => <p key={m} className="error small">{m}</p>)}
       {uploading.map((n) => <p key={n} className="small muted">Uploading {n}…</p>)}
-      {base.documents.length > 0 && (
+      {docs.length === 0 && !pasting ? (
+        <div className="dropzone" onClick={() => input.current.click()}>
+          <div className="empty-icon">📄</div>
+          <b>Drop documents here, or click to choose files</b>
+          <span className="small muted">Markdown, text, code, HTML, JSON, CSV or .docx · up to 5 MB each · scanned by gitleaks before embedding</span>
+        </div>
+      ) : docs.length > 0 && (
         <table className="kb-docs">
-          <thead><tr><th>Document</th><th>Status</th><th>Size</th><th>Chunks</th><th>Tokens</th><th /></tr></thead>
+          <thead><tr>
+            <th><input type="checkbox" aria-label="Select all documents" checked={picked.length === docs.length}
+              onChange={(e) => setPicked(e.target.checked ? docs.map((d) => d.id) : [])} /></th>
+            <th>Document</th><th>Status</th><th>Size</th><th>Chunks</th><th /></tr></thead>
           <tbody>
-            {base.documents.map((d) => (
+            {docs.map((d) => (
               <Fragment key={d.id}>
-                <tr className="clickable" onClick={() => d.status === "ready" && show(d)}>
-                  <td>{d.status === "ready" ? (open === d.id ? "▾ " : "▸ ") : ""}{d.name}</td>
-                  <td><span className={`badge ${d.status === "ready" ? "status-completed" : d.status === "failed" ? "status-failed" : "status-awaiting_approval"}`}>{d.status}</span>
-                    {d.error && <div className="small error">{d.error}</div>}</td>
+                <tr className={picked.includes(d.id) ? "picked" : ""}>
+                  <td><input type="checkbox" aria-label={`Select ${d.name}`} checked={picked.includes(d.id)} onChange={() => toggle(d.id)} /></td>
+                  <td>
+                    {d.status === "ready"
+                      ? <button className="linkish" onClick={() => show(d)} title="Show chunks">{open === d.id ? "▾" : "▸"} {d.name}</button>
+                      : d.name}
+                    {d.error && <div className="small error">{d.error}</div>}
+                  </td>
+                  <td><span className={`badge ${d.status === "ready" ? "status-completed" : d.status === "failed" ? "status-failed" : "status-awaiting_approval"}`}>{d.status}</span></td>
                   <td className="small">{size(d.bytes)}</td>
-                  <td>{d.chunks}</td>
-                  <td className="small">{d.tokens}{d.embed_tokens ? ` (${d.embed_tokens} embedded)` : ""}</td>
-                  <td><button className="secondary icon" title="Delete document" onClick={async (e) => {
-                    e.stopPropagation();
-                    await api.deleteDocument(d.id);
-                    onChanged();
-                  }}>✕</button></td>
+                  <td className="small">{d.chunks} · {d.tokens} tok</td>
+                  <td><button className="secondary danger small-btn" onClick={() => remove([d.id])}>Remove</button></td>
                 </tr>
                 {open === d.id && (
                   <tr><td colSpan={6}>
@@ -211,7 +277,8 @@ function Documents({ base, onChanged }) {
           </tbody>
         </table>
       )}
-    </>
+      {docs.length > 0 && <p className="small muted kb-hint">Drop more files anywhere in this panel to add them.</p>}
+    </div>
   );
 }
 

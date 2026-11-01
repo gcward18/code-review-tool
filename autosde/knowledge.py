@@ -280,6 +280,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(heading, text, tokenize='po
 """
 
 
+def connect(path):
+    """A connection of its own: the web server handles requests on several threads, and
+    sharing one SQLite connection lets their statements interleave."""
+    import sqlite3
+
+    db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False, timeout=10)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    return db
+
+
 def settings_for(raw=None):
     """Validated knowledge base settings, filled from defaults."""
     raw = raw or {}
@@ -308,9 +319,10 @@ class Knowledge:
     """Knowledge bases in the AutoSDE database. `embed(texts, model, dimensions)` returns
     (vectors, tokens_used); `scan(text)` returns gitleaks rule ids (empty when clean)."""
 
-    def __init__(self, db, *, embed, scan, clock=time.time):
+    def __init__(self, db, *, embed, scan, clock=time.time, create=True):
         self.db, self.embed, self.scan, self.clock = db, embed, scan, clock
-        self.db.executescript(SCHEMA)
+        if create:
+            self.db.executescript(SCHEMA)
 
     def _all(self, sql, *args):
         return [dict(row) for row in self.db.execute(sql, args)]
@@ -370,11 +382,15 @@ class Knowledge:
     def add_document(self, kb_id, name, data):
         """Record the upload; `ingest` does the work (call it on a background thread)."""
         self.base(kb_id)
+        digest = hashlib.sha256(data).hexdigest()
+        if self.db.execute("SELECT 1 FROM kb_documents WHERE kb_id = ? AND sha256 = ?"
+                           " AND status != 'failed'", (kb_id, digest)).fetchone():
+            raise KnowledgeError("That document is already in this knowledge base.")
         name = re.sub(r"[^\w .()\-]", "_", (name or "document").strip())[:120] or "document"
         cursor = self.db.execute(
             "INSERT INTO kb_documents(kb_id, name, bytes, sha256, status, created_at)"
             " VALUES (?, ?, ?, ?, 'processing', ?)",
-            (kb_id, name, len(data), hashlib.sha256(data).hexdigest(), self.clock()))
+            (kb_id, name, len(data), digest, self.clock()))
         return cursor.lastrowid
 
     def ingest(self, doc_id, data):

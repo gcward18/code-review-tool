@@ -103,6 +103,15 @@ class KnowledgeTests(unittest.TestCase):
         self.assertIsNotNone(results[0]["vector"])
         self.assertIn("[1] guide.md > Money handling > Totals", context_block(results))
 
+    def test_duplicate_uploads_are_refused_but_failed_ones_can_be_retried(self):
+        self.ingest("guide.md", GUIDE)
+        with self.assertRaises(KnowledgeError):
+            self.kb.add_document(self.base["id"], "copy.md", GUIDE.encode())
+        broken = Knowledge(self.store.db, embed=self.model.embed, scan=lambda text: ["rule"])
+        doc = broken.add_document(self.base["id"], "n.md", b"# N\n\nnote")
+        broken.ingest(doc, b"# N\n\nnote")
+        self.ingest("n.md", "# N\n\nnote")  # a failed upload doesn't block a retry
+
     def test_flagged_documents_are_not_embedded_and_deletes_clean_up(self):
         flagging = Knowledge(self.store.db, embed=self.model.embed,
                              scan=lambda text: ["generic-api-key"] if "private-sentinel" in text else [])
@@ -198,6 +207,22 @@ class KnowledgeApiTests(unittest.TestCase):
                                          method="POST" if body is not None else "GET")
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read())
+
+    def test_concurrent_deletes_and_reads_never_lose_the_base(self):
+        import base64
+        from concurrent.futures import ThreadPoolExecutor
+
+        base = self.call("/api/knowledge", {"name": "busy"})
+        ids = []
+        for n in range(6):
+            data = base64.b64encode(f"# Note {n}\n\nbody {n}".encode()).decode()
+            ids.append(self.call(f"/api/knowledge/{base['id']}/documents", {"name": f"n{n}.md", "data": data})["id"])
+        with ThreadPoolExecutor(8) as pool:
+            jobs = [pool.submit(self.call, f"/api/knowledge/documents/{i}/delete", {}) for i in ids]
+            jobs += [pool.submit(self.call, f"/api/knowledge/{base['id']}") for _ in range(30)]
+            results = [job.result() for job in jobs]  # a 400 would raise here
+        self.assertTrue(all("name" in r for r in results[len(ids):]))
+        self.assertEqual(self.call(f"/api/knowledge/{base['id']}")["documents"], [])
 
     def test_bases_work_without_gitleaks_until_a_document_is_embedded(self):
         import base64

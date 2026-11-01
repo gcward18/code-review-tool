@@ -151,7 +151,7 @@ function Options({ items }) {
   ));
 }
 
-function RangePicker({ repoPath, onStarted }) {
+function RangePicker({ repoPath, onStarted, onProject }) {
   const [repo, setRepo] = useState(null);
   const [from, setFrom] = useState("");
   const [older, setOlder] = useState(null);
@@ -203,9 +203,14 @@ function RangePicker({ repoPath, onStarted }) {
   if (!repo) return <div className="card muted">Loading repository…</div>;
   return (
     <div className="card">
-      <h2>
-        {repo.name} <code className="muted small">{repo.path}</code>
-      </h2>
+      <div className="actions title">
+        <h2 className="grow">
+          {repo.name} <code className="muted small">{repo.path}</code>
+        </h2>
+        {repo.project_id && (
+          <button className="secondary" onClick={() => onProject(repo.project_id)}>Past reviews</button>
+        )}
+      </div>
       <div className="range">
         <label>
           From <span className="muted small">(newer)</span>
@@ -322,10 +327,13 @@ function Plan({ review, onDecided }) {
   );
 }
 
-function Review({ id, onProject }) {
+function Review({ id, onProject, onContext }) {
   const [review, setReview] = useState(null);
   const [error, setError] = useState("");
-  const load = useCallback(() => api.review(id).then(setReview).catch((e) => setError(e.message)), [id]);
+  const load = useCallback(() => api.review(id).then((r) => {
+    setReview(r);
+    onContext({ repo: r.project_path });
+  }).catch((e) => setError(e.message)), [id]);
 
   useEffect(() => {
     load();
@@ -500,16 +508,19 @@ function Fix({ text }) {
   );
 }
 
-function Project({ id, onOpen }) {
+function Project({ id, onOpen, onReview, onContext }) {
   const [project, setProject] = useState(null);
   useEffect(() => {
-    api.project(id).then(setProject);
+    api.project(id).then((p) => (setProject(p), onContext({ repo: p.path, name: p.name })));
   }, [id]);
   if (!project) return <div className="card muted">Loading…</div>;
   return (
     <>
       <div className="card">
-        <h2>{project.name}</h2>
+        <div className="actions title">
+          <h2 className="grow">{project.name}</h2>
+          <button onClick={() => onReview(project.path)}>New review</button>
+        </div>
         <code className="muted small">{project.path}</code>
       </div>
       <div className="card">
@@ -533,6 +544,30 @@ function Project({ id, onOpen }) {
   );
 }
 
+// Where you are, with a way back: Home › project or repository › review.
+function Crumbs({ view, canGoBack, onBack, go }) {
+  if (view.kind === "home") return null;
+  const trail = [];
+  if (view.repo) trail.push({ label: view.repo.split("/").pop(), to: { kind: "repo", repo: view.repo } });
+  if (view.kind === "project") trail.push({ label: "Past reviews" });
+  if (view.kind === "review") trail.push({ label: `Review #${view.id}` });
+  if (view.kind === "agents") trail.push({ label: "Agents" });
+  return (
+    <nav className="crumbs">
+      <button className="secondary" onClick={onBack} disabled={!canGoBack} aria-label="Back">←</button>
+      <a href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>Home</a>
+      {trail.map((item, i) => (
+        <span key={i}>
+          <span className="muted"> › </span>
+          {item.to && i < trail.length - 1
+            ? <a href="#" onClick={(e) => (e.preventDefault(), go(item.to))}>{item.label}</a>
+            : <b>{item.label}</b>}
+        </span>
+      ))}
+    </nav>
+  );
+}
+
 // --- shell ----------------------------------------------------------------------
 
 export default function App() {
@@ -546,9 +581,19 @@ export default function App() {
     api.session().then(setSession).catch((e) => setError(e.message));
   }, []);
 
+  const [history, setHistory] = useState([]);
   const go = (next) => {
+    setHistory((h) => [...h.slice(-49), view]);
     setView(next);
     setDrawer(false);
+  };
+  // Pages fill in the repository they belong to, for the breadcrumb; not a navigation.
+  const context = (extra) => setView((v) => ({ ...v, ...extra }));
+  const back = () => {
+    setHistory((h) => {
+      if (h.length) setView(h[h.length - 1]);
+      return h.slice(0, -1);
+    });
   };
 
   return (
@@ -569,18 +614,21 @@ export default function App() {
       </aside>
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
       <main>
+        <Crumbs view={view} canGoBack={history.length > 0} onBack={back} go={go} />
         {error && <div className="card error">{error}</div>}
         {session && view.kind === "home" && (
           <Home onOpen={(id) => go({ kind: "review", id })} onProject={(id) => go({ kind: "project", id })} />
         )}
         {view.kind === "repo" && (
-          <RangePicker repoPath={view.repo} onStarted={(id) => go({ kind: "review", id, repo: view.repo })} />
+          <RangePicker repoPath={view.repo} onStarted={(id) => go({ kind: "review", id, repo: view.repo })}
+            onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
         )}
         {view.kind === "review" && (
-          <Review key={view.id} id={view.id} onProject={(id) => go({ kind: "project", id })} />
+          <Review key={view.id} id={view.id} onContext={context} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
         )}
         {session && view.kind === "agents" && <Agents defaultModel={session.model} />}
-        {view.kind === "project" && <Project id={view.id} onOpen={(id) => go({ kind: "review", id })} />}
+        {view.kind === "project" && <Project key={view.id} id={view.id} onOpen={(id) => go({ kind: "review", id, repo: view.repo })}
+          onReview={(repo) => go({ kind: "repo", repo })} onContext={context} />}
       </main>
     </div>
   );

@@ -149,6 +149,7 @@ class App:
         return {
             "path": str(root),
             "name": root.name,
+            "project_id": (self.store.find_project(str(root)) or {}).get("id"),
             "from": self._options(["HEAD"], branches, commits),
             "default_from": "HEAD",
         }

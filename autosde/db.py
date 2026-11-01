@@ -228,7 +228,7 @@ class Store:
     def reviews(self, project_id=None, limit=50):
         where, args = ("WHERE r.project_id = ?", (project_id,)) if project_id else ("", ())
         return self._all(
-            "SELECT r.*, p.name AS project,"
+            "SELECT r.*, p.name AS project, p.path AS project_path,"
             " (SELECT COUNT(*) FROM findings f WHERE f.review_id = r.id AND f.kept) AS findings,"
             " (SELECT GROUP_CONCAT(DISTINCT a.agent) FROM agent_runs a"
             "   WHERE a.review_id = r.id AND a.role = 'specialist') AS agents"

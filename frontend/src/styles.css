@@ -133,3 +133,6 @@ pre.fix .add { background: color-mix(in srgb, var(--ok) 18%, transparent); }
 pre.fix .del { background: color-mix(in srgb, var(--error) 18%, transparent); }
 pre.fix .hunk { color: var(--muted); }
 .search { margin: 0 4px 10px; width: calc(100% - 8px); }
+.crumbs { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.crumbs button { padding: 2px 10px; }
+.title { align-items: center; margin-bottom: 10px; } .title h2 { margin: 0; }

@@ -57,6 +57,16 @@ class AgentConfigTests(unittest.TestCase):
         self.assertFalse(json.loads((self.prompts / "agents.json").read_text())["agents"]["java"]["enabled"])
 
 
+class ReasoningTests(unittest.TestCase):
+    def test_reasoning_is_sent_only_to_reasoning_models(self):
+        from autosde.llm import reasons
+
+        for model in ("gpt-6-luna", "gpt-5.6-sol", "o3", "o4-mini"):
+            self.assertTrue(reasons(model), model)
+        for model in ("gpt-4o", "gpt-4.1-mini", "gpt-3.5-turbo"):
+            self.assertFalse(reasons(model), model)
+
+
 class ModelListTests(unittest.TestCase):
     def test_keeps_text_models_and_hides_the_key(self):
         from autosde.llm import OpenAIModel

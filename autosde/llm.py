@@ -1,6 +1,7 @@
 """Model clients: OpenAI Responses API, and a scripted stand-in for tests and notebooks."""
 
 import json
+import re
 import os
 import ssl
 import threading
@@ -46,6 +47,14 @@ def _key_from_secrets_manager(secret_id, profile, region):
         return json.loads(raw)["api_key"] if raw.lstrip().startswith("{") else raw.strip()
     except Exception:
         raise RuntimeError("OpenAI key could not be read from Secrets Manager") from None
+
+
+def reasons(model):
+    """Only reasoning models (o-series, gpt-5 and later) accept the `reasoning` field."""
+    if re.match(r"o\d", model):
+        return True
+    version = re.match(r"gpt-(\d+)", model)
+    return bool(version) and int(version[1]) >= 5
 
 
 class OpenAIModel:
@@ -123,7 +132,7 @@ class OpenAIModel:
                 }
             },
         }
-        if self.reasoning_effort:
+        if self.reasoning_effort and reasons(body["model"]):
             body["reasoning"] = {"effort": self.reasoning_effort}
         request = urllib.request.Request(
             API,

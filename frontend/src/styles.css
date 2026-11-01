@@ -294,3 +294,21 @@ button.linkish { background: none; border: 0; padding: 0; color: var(--accent); 
 button.small-btn { padding: 2px 10px; font-size: 12px; }
 .kb-hint { margin-top: 8px; }
 .kb-paste textarea { font: 13px/1.5 var(--font-code); }
+
+/* Chunking strategy and chunk lab */
+.strategy-detail { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px;
+  background: var(--surface); padding: 10px 12px; margin: 8px 0 10px; }
+.strategy-detail p { margin: 0 0 6px; }
+.strategy-detail dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 10px; }
+.strategy-detail dt { font: 600 10.5px var(--font-code); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); padding-top: 2px; }
+.strategy-detail dd { margin: 0; }
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted);
+  font: 600 12px var(--font-code); padding: 6px 10px; }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.lab-actions { margin: 8px 0; align-items: center; }
+.lab-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0 10px; font-family: var(--font-code); }
+.lab-chunk.tone-0 { border-left: 3px solid var(--accent); }
+.lab-chunk.tone-1 { border-left: 3px solid var(--highlight); }
+.kb-paste-area { font: 12.5px/1.5 var(--font-code); margin-top: 8px; }
+mark { background: color-mix(in srgb, var(--highlight) 45%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }

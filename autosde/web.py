@@ -352,6 +352,10 @@ class App:
         try:
             if method == "GET" and not parts:
                 return kb.bases()
+            if method == "GET" and parts == ["options"]:
+                from autosde.chunking import STRATEGIES
+                from autosde.knowledge import DEFAULTS, EMBED_MODELS
+                return {"strategies": STRATEGIES, "models": EMBED_MODELS, "defaults": DEFAULTS}
             if method == "POST" and not parts:
                 return kb.create(body.get("name"), body.get("description", ""), body.get("settings"))
             if method == "POST" and parts == ["search"]:
@@ -378,6 +382,14 @@ class App:
                 if method == "POST" and rest == ["delete"]:
                     kb.delete(kb_id)
                     return {"ok": True}
+                if method == "POST" and rest == ["preview"]:
+                    doc_id = body.get("doc_id")
+                    return kb.preview(kb_id, doc_id=doc_id if isinstance(doc_id, int) else None,
+                                      text=body.get("text"), settings=body.get("settings"))
+                if method == "POST" and rest == ["rechunk"]:
+                    docs, skipped = kb.rechunk(kb_id)
+                    threading.Thread(target=kb.reindex, args=(docs,), daemon=True).start()
+                    return {"rechunking": len(docs), "skipped": skipped}
                 if method == "POST" and rest == ["documents"]:
                     try:
                         data = base64.b64decode(body.get("data") or "", validate=True)

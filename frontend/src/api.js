@@ -29,6 +29,10 @@ export const api = {
     call(`/api/projects/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }),
   clearChat: (id) => call(`/api/projects/${id}/chat/clear`, { method: "POST", body: "{}" }),
   knowledge: () => call("/api/knowledge"),
+  knowledgeOptions: () => call("/api/knowledge/options"),
+  previewChunks: (id, body) =>
+    call(`/api/knowledge/${id}/preview`, { method: "POST", body: JSON.stringify(body) }),
+  rechunkKnowledge: (id) => call(`/api/knowledge/${id}/rechunk`, { method: "POST", body: "{}" }),
   knowledgeBase: (id) => call(`/api/knowledge/${id}`),
   createKnowledge: (name, description) =>
     call("/api/knowledge", { method: "POST", body: JSON.stringify({ name, description }) }),

@@ -73,53 +73,112 @@ function Bases({ bases, selected, onSelect, creating, setCreating, onCreated }) 
   );
 }
 
-function Strategy({ base, onSaved, onDeleted }) {
+function StrategyDetail({ info }) {
+  if (!info) return null;
+  return (
+    <div className="strategy-detail">
+      <p className="small"><b>{info.summary}</b></p>
+      <dl className="small">
+        <dt>How it works</dt><dd>{info.how}</dd>
+        <dt>Best for</dt><dd>{info.best}</dd>
+        <dt>Trade-off</dt><dd>{info.tradeoff}</dd>
+      </dl>
+    </div>
+  );
+}
+
+function Select({ label, hint, value, onChange, options, disabled }) {
+  return (
+    <label className="field">
+      <span className="small">{label}{hint && <span className="muted"> · {hint}</span>}</span>
+      <select value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+        {options.map(([v, text]) => <option key={v} value={v}>{text}</option>)}
+      </select>
+    </label>
+  );
+}
+
+const SIZES = [100, 200, 300, 400, 500, 600, 800, 1000, 1500, 2000];
+const OVERLAPS = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5];
+const PERCENTILES = [70, 75, 80, 85, 90, 95, 98];
+const TOP_KS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
+const BUDGETS = [500, 1000, 1500, 2000, 3000, 4000, 6000, 8000];
+const withValue = (list, value) => [...new Set([...list, value])].sort((x, y) => x - y);
+
+function Strategy({ base, options, onSaved, onDeleted }) {
   const [draft, setDraft] = useState(base.settings);
   const [status, setStatus] = useState("");
   useEffect(() => setDraft(base.settings), [base.id]);
-  const field = (key, label, hint, props) => (
-    <label className="field">
-      <span className="small">{label} <span className="muted">· {hint}</span></span>
-      <input type="number" value={draft[key]} {...props}
-        onChange={(e) => setDraft({ ...draft, [key]: props.step ? parseFloat(e.target.value) : parseInt(e.target.value, 10) })} />
-    </label>
-  );
+  const set = (key, value) => setDraft((d) => ({ ...d, [key]: value }));
+  const strategies = options?.strategies || {};
+  const models = options?.models || {};
+  const info = strategies[draft.strategy];
+  const uses = info?.uses || ["chunk_tokens", "overlap"];
+  const locked = base.chunks > 0;
+  const stale = base.documents.filter((d) => d.status === "ready" && d.strategy && d.strategy !== base.settings.strategy);
+
   const save = async () => {
     try {
-      onSaved(await api.updateKnowledge(base.id, { settings: draft }));
-      setStatus("Saved. New settings apply to documents uploaded from now on.");
+      const saved = await api.updateKnowledge(base.id, { settings: draft });
+      onSaved(saved);
+      const chunking = ["strategy", "chunk_tokens", "overlap", "semantic_percentile"]
+        .some((k) => draft[k] !== base.settings[k]);
+      setStatus(chunking && base.documents.length ? "Saved. Re-chunk to apply it to existing documents." : "Saved.");
     } catch (e) {
       setStatus(e.message);
     }
   };
+  const rechunk = async () => {
+    const result = await api.rechunkKnowledge(base.id);
+    setStatus(`Re-chunking ${result.rechunking} document(s)`
+      + (result.skipped.length ? `; re-upload ${result.skipped.join(", ")} (stored before text was kept).` : "."));
+    onSaved(await api.knowledgeBase(base.id));
+  };
   const dirty = JSON.stringify(draft) !== JSON.stringify(base.settings);
+  const modelDims = models[draft.embed_model]?.dimensions || [draft.dimensions];
+
   return (
     <>
       {base.description && <p className="small muted">{base.description}</p>}
       <h4 className="kb-h">Chunking</h4>
+      <Select label="Strategy" value={draft.strategy} onChange={(v) => set("strategy", v)}
+        options={Object.entries(strategies).map(([key, s]) => [key, s.name])} />
+      <StrategyDetail info={info} />
       <div className="kb-grid">
-        {field("chunk_tokens", "Chunk size", "tokens per chunk", { min: 100, max: 2000, step: undefined })}
-        {field("overlap", "Overlap", "share carried into the next chunk", { min: 0, max: 0.5, step: 0.05 })}
+        {uses.includes("chunk_tokens") && <Select label="Chunk size" hint="tokens" value={draft.chunk_tokens}
+          onChange={(v) => set("chunk_tokens", Number(v))} options={withValue(SIZES, draft.chunk_tokens).map((n) => [n, `${n} tokens`])} />}
+        {uses.includes("overlap") && <Select label="Overlap" hint="carried into the next chunk" value={draft.overlap}
+          onChange={(v) => set("overlap", Number(v))} options={withValue(OVERLAPS, draft.overlap).map((n) => [n, `${Math.round(n * 100)}%`])} />}
+        {uses.includes("semantic_percentile") && <Select label="Breakpoint percentile" hint="higher = fewer, larger chunks"
+          value={draft.semantic_percentile} onChange={(v) => set("semantic_percentile", Number(v))}
+          options={withValue(PERCENTILES, draft.semantic_percentile).map((n) => [n, `${n}th`])} />}
       </div>
       <h4 className="kb-h">Embedding</h4>
       <div className="kb-grid">
-        <label className="field">
-          <span className="small">Model <span className="muted">· fixed once documents exist</span></span>
-          <input value={draft.embed_model} disabled={base.chunks > 0}
-            onChange={(e) => setDraft({ ...draft, embed_model: e.target.value })} />
-        </label>
-        {field("dimensions", "Dimensions", "smaller is faster", { min: 64, max: 3072, disabled: base.chunks > 0 })}
+        <Select label="Model" hint={locked ? "fixed once documents exist" : ""} value={draft.embed_model} disabled={locked}
+          onChange={(v) => setDraft((d) => {
+            const dims = models[v]?.dimensions || [d.dimensions];
+            return { ...d, embed_model: v, dimensions: dims.includes(d.dimensions) ? d.dimensions : dims[Math.min(1, dims.length - 1)] };
+          })}
+          options={Object.entries(models).map(([m, o]) => [m, `${m} · $${o.price}/1M tokens`])} />
+        <Select label="Dimensions" hint="smaller is faster" value={draft.dimensions} disabled={locked || modelDims.length < 2}
+          onChange={(v) => set("dimensions", Number(v))} options={modelDims.map((n) => [n, String(n)])} />
       </div>
       <h4 className="kb-h">Retrieval</h4>
       <div className="kb-grid">
-        {field("top_k", "Top K", "chunks given to an agent", { min: 1, max: 20 })}
-        {field("context_tokens", "Context budget", "max tokens of reference", { min: 200, max: 8000 })}
+        <Select label="Top K" hint="chunks given to an agent" value={draft.top_k}
+          onChange={(v) => set("top_k", Number(v))} options={withValue(TOP_KS, draft.top_k).map((n) => [n, String(n)])} />
+        <Select label="Context budget" hint="max reference tokens" value={draft.context_tokens}
+          onChange={(v) => set("context_tokens", Number(v))} options={withValue(BUDGETS, draft.context_tokens).map((n) => [n, `${n} tokens`])} />
       </div>
       <p className="small muted">
-        Hybrid search: vector similarity and BM25 keyword ranks fused with reciprocal rank fusion, at most 3 chunks per document.
+        Retrieval is hybrid: vector similarity and BM25 keyword ranks fused with reciprocal rank fusion, at most 3 chunks per document.
       </p>
       <div className="actions">
         <button disabled={!dirty} onClick={save}>Save strategy</button>
+        {stale.length > 0 && !dirty && (
+          <button className="secondary" onClick={rechunk}>Re-chunk {stale.length} document{stale.length > 1 ? "s" : ""}</button>
+        )}
         <span className="grow small muted">{status}</span>
         <button className="secondary danger" onClick={async () => {
           if (window.confirm(`Delete "${base.name}" and all its documents and embeddings?`)) {
@@ -282,6 +341,92 @@ function Documents({ base, onChanged }) {
   );
 }
 
+function Highlight({ text, query }) {
+  const terms = [...new Set((query.toLowerCase().match(/[a-z0-9_]{3,}/g) || []))];
+  if (!terms.length) return text;
+  const pattern = new RegExp(`(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+  return text.split(pattern).map((part, i) => (i % 2 ? <mark key={i}>{part}</mark> : part));
+}
+
+function ChunkPreview({ base, options }) {
+  const docs = base.documents.filter((d) => d.has_text);
+  const [source, setSource] = useState(docs[0] ? String(docs[0].id) : "paste");
+  const [text, setText] = useState("");
+  const [strategy, setStrategy] = useState(base.settings.strategy);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => setStrategy(base.settings.strategy), [base.settings.strategy]);
+  const strategies = options?.strategies || {};
+  const run = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      setResult(await api.previewChunks(base.id, {
+        ...(source === "paste" ? { text } : { doc_id: Number(source) }),
+        settings: { strategy },
+      }));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div className="kb-grid">
+        <Select label="Source" value={source} onChange={setSource}
+          options={[...docs.map((d) => [String(d.id), d.name]), ["paste", "Paste text…"]]} />
+        <Select label="Strategy" value={strategy} onChange={setStrategy}
+          options={Object.entries(strategies).map(([key, s]) => [key, s.name])} />
+      </div>
+      {source === "paste" && (
+        <textarea rows={5} className="kb-paste-area" value={text} placeholder="Paste text to see how it would be chunked…"
+          onChange={(e) => setText(e.target.value)} />
+      )}
+      <div className="actions lab-actions">
+        <button onClick={run} disabled={busy || (source === "paste" && !text.trim())}>{busy ? "Chunking…" : "Preview chunks"}</button>
+        <span className="small muted">Uses this base's size and overlap; nothing is saved{strategy === "semantic" ? " (semantic embeds each sentence)" : ""}.</span>
+      </div>
+      {error && <p className="error small">{error}</p>}
+      {result && (
+        <>
+          <div className="lab-stats small">
+            <span><b>{result.stats.chunks}</b> chunks</span>
+            <span>avg <b>{result.stats.avg_tokens}</b> tok</span>
+            <span>min {result.stats.min_tokens}</span>
+            <span>max {result.stats.max_tokens}</span>
+            <span>total {result.stats.total_tokens}</span>
+          </div>
+          {result.chunks.map((c) => (
+            <div key={c.position} className={`chunk lab-chunk tone-${c.position % 2}`}>
+              <div className="small muted">#{c.position + 1} · {c.heading} · {c.tokens} tokens</div>
+              <pre>{c.text}</pre>
+            </div>
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
+function ChunkLab({ base, bases, selected, options }) {
+  const [tab, setTab] = useState("chunks");
+  return (
+    <>
+      <div className="tabs" role="tablist">
+        {[["chunks", "Chunks"], ["retrieval", "Retrieval"]].map(([key, label]) => (
+          <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? "tab active" : "tab"}
+            onClick={() => setTab(key)}>{label}</button>
+        ))}
+      </div>
+      {tab === "chunks"
+        ? (base ? <ChunkPreview key={base.id} base={base} options={options} /> : <p className="muted small">Select a knowledge base.</p>)
+        : <Tester bases={bases} selected={selected} />}
+    </>
+  );
+}
+
 function Tester({ bases, selected }) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState([]);
@@ -328,7 +473,7 @@ function Tester({ bases, selected }) {
           <div className="small muted">
             score {r.score} · {r.vector !== null ? `vector ${r.vector}` : "no vector match"} · {r.keyword ? "keyword match" : "no keyword match"} · {r.tokens} tokens
           </div>
-          <pre>{r.text}</pre>
+          <pre><Highlight text={r.text} query={query} /></pre>
         </div>
       ))}
     </>
@@ -351,6 +496,10 @@ export default function Knowledge({ selected, onSelect: setSelected }) {
   const [base, setBase] = useState(null);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [options, setOptions] = useState(null);
+  useEffect(() => {
+    api.knowledgeOptions().then(setOptions).catch(() => setOptions(null));
+  }, []);
 
   const loadBases = () => api.knowledge().then((list) => {
     setBases(list);
@@ -395,7 +544,7 @@ export default function Knowledge({ selected, onSelect: setSelected }) {
           setCreating={setCreating} onCreated={(id) => (loadBases(), setSelected(id))} />
       </Panel>}
       bottomLeft={<Panel title={base ? `Strategy · ${base.name}` : "Strategy"}>
-        {base ? <Strategy key={base.id} base={base} onSaved={(b) => (setBase(b), loadBases())}
+        {base ? <Strategy key={base.id} base={base} options={options} onSaved={(b) => (setBase(b), loadBases())}
           onDeleted={() => {
             setBases((items) => items.filter((item) => item.id !== base.id));
             setSelected(null);
@@ -407,8 +556,8 @@ export default function Knowledge({ selected, onSelect: setSelected }) {
       topRight={<Panel title={base ? `Documents · ${base.name}` : "Documents"}>
         {base ? <Documents key={base.id} base={base} onChanged={refresh} /> : <p className="muted small">Select a knowledge base to upload documents.</p>}
       </Panel>}
-      bottomRight={<Panel title="Retrieval tester">
-        {bases.length ? <Tester bases={bases} selected={selected} /> : <p className="muted small">Create a knowledge base first.</p>}
+      bottomRight={<Panel title="Chunk lab">
+        {bases.length ? <ChunkLab base={base} bases={bases} selected={selected} options={options} /> : <p className="muted small">Create a knowledge base first.</p>}
       </Panel>}
     />
   );

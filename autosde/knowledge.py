@@ -23,7 +23,15 @@ from array import array
 from dataclasses import dataclass
 
 MAX_BYTES = 20_000_000
-DEFAULTS = {"chunk_tokens": 400, "overlap": 0.15, "top_k": 6, "context_tokens": 1500,
+# Embedding models and the vector sizes each accepts (ada-002 has a fixed size).
+EMBED_MODELS = {
+    "text-embedding-3-small": {"dimensions": [256, 512, 1024, 1536], "price": 0.02},
+    "text-embedding-3-large": {"dimensions": [256, 512, 1024, 1536, 3072], "price": 0.13},
+    "text-embedding-ada-002": {"dimensions": [1536], "price": 0.10, "fixed": True},
+}
+STRATEGY_NAMES = ("structure", "recursive", "fixed", "sentence", "semantic")
+DEFAULTS = {"strategy": "structure", "semantic_percentile": 90,
+            "chunk_tokens": 400, "overlap": 0.15, "top_k": 6, "context_tokens": 1500,
             "embed_model": "text-embedding-3-small", "dimensions": 512}
 TEXT_TYPES = {".txt", ".md", ".markdown", ".rst", ".adoc", ".json", ".csv", ".tsv", ".yaml",
               ".yml", ".toml", ".ini", ".cfg", ".xml", ".html", ".htm", ".docx", ".pdf", ".log", ".sql",
@@ -323,7 +331,7 @@ def settings_for(raw=None):
     raw = raw or {}
     out = dict(DEFAULTS)
     bounds = {"chunk_tokens": (100, 2000), "top_k": (1, 20), "context_tokens": (200, 8000),
-              "dimensions": (64, 3072)}
+              "dimensions": (64, 3072), "semantic_percentile": (50, 99)}
     for key, (low, high) in bounds.items():
         if key in raw:
             value = raw[key]
@@ -334,11 +342,19 @@ def settings_for(raw=None):
         if not isinstance(raw["overlap"], (int, float)) or not 0 <= raw["overlap"] <= 0.5:
             raise KnowledgeError("overlap must be between 0 and 0.5.")
         out["overlap"] = float(raw["overlap"])
+    if "strategy" in raw:
+        if raw["strategy"] not in STRATEGY_NAMES:
+            raise KnowledgeError("Unknown chunking strategy.")
+        out["strategy"] = raw["strategy"]
     if "embed_model" in raw:
-        if not isinstance(raw["embed_model"], str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}",
-                                                                       raw["embed_model"]):
-            raise KnowledgeError("Invalid embedding model id.")
+        if raw["embed_model"] not in EMBED_MODELS:
+            raise KnowledgeError("Choose a listed embedding model.")
         out["embed_model"] = raw["embed_model"]
+    allowed = EMBED_MODELS[out["embed_model"]]["dimensions"]
+    if out["dimensions"] not in allowed:
+        if "dimensions" in raw:
+            raise KnowledgeError(f"{out['embed_model']} supports dimensions {', '.join(map(str, allowed))}.")
+        out["dimensions"] = min(allowed, key=lambda d: abs(d - out["dimensions"]))
     return out
 
 
@@ -350,6 +366,10 @@ class Knowledge:
         self.db, self.embed, self.scan, self.clock = db, embed, scan, clock
         if create:
             self.db.executescript(SCHEMA)
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(kb_documents)")}
+            for column in ("content", "strategy"):  # added after the first release
+                if column not in columns:
+                    self.db.execute(f"ALTER TABLE kb_documents ADD COLUMN {column} TEXT")
 
     def _all(self, sql, *args):
         return [dict(row) for row in self.db.execute(sql, args)]
@@ -370,7 +390,8 @@ class Knowledge:
             raise KnowledgeError("No such knowledge base.")
         base = rows[0]
         base["documents"] = self._all(
-            "SELECT id, name, bytes, status, error, chunks, tokens, embed_tokens, created_at"
+            "SELECT id, name, bytes, status, error, chunks, tokens, embed_tokens, strategy,"
+            " content IS NOT NULL AS has_text, created_at"
             " FROM kb_documents WHERE kb_id = ? ORDER BY created_at DESC", kb_id)
         return base
 
@@ -421,50 +442,112 @@ class Knowledge:
         return cursor.lastrowid
 
     def ingest(self, doc_id, data):
+        """Extract, scan, chunk and embed an uploaded document (run on a background thread)."""
         doc = self._all("SELECT * FROM kb_documents WHERE id = ?", doc_id)[0]
-        settings = self.base(doc["kb_id"])["settings"]
         try:
             text = extract(doc["name"], data)
             if not text.strip():
                 raise KnowledgeError("No text found in that file.")
             if self.scan(text):
                 raise KnowledgeError("Gitleaks flagged a possible secret; the document was not embedded.")
-            suffix = "." + doc["name"].rsplit(".", 1)[-1].lower() if "." in doc["name"] else ""
-            pieces = chunk(text, title=doc["name"], chunk_tokens=settings["chunk_tokens"],
-                           overlap=settings["overlap"], code=suffix in CODE_TYPES)
+            self.db.execute("UPDATE kb_documents SET content = ? WHERE id = ?", (text, doc_id))
+        except Exception as error:
+            self._fail(doc_id, error)
+            return
+        self._index(doc, text)
+
+    def _fail(self, doc_id, error):
+        if isinstance(error, KnowledgeError):
+            reason = str(error)
+        elif type(error).__name__ == "ScanUnavailable":
+            reason = "Gitleaks is not available; set AUTOSDE_GITLEAKS to scan documents."
+        else:  # embedding API or other failure: class name only, never a message
+            reason = f"Embedding failed ({type(error).__name__})."
+        self.db.execute("UPDATE kb_documents SET status = 'failed', error = ? WHERE id = ?",
+                        (reason, doc_id))
+
+    def _split(self, name, text, settings):
+        from autosde.chunking import split
+
+        suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        return split(text, title=name, settings=settings, code=suffix in CODE_TYPES,
+                     embed=self._embed)
+
+    def _embed(self, texts, model, dimensions):
+        fixed = EMBED_MODELS.get(model, {}).get("fixed")
+        return self.embed(texts, model, None if fixed else dimensions)
+
+    def _index(self, doc, text):
+        """(Re)build a document's chunks and embeddings from its scanned text."""
+        settings = self.base(doc["kb_id"])["settings"]
+        try:
+            pieces = self._split(doc["name"], text, settings)
             vectors, used = [], 0
             for start in range(0, len(pieces), 64):
                 batch = [embedding_text(p) for p in pieces[start:start + 64]]
-                got, spent = self.embed(batch, settings["embed_model"], settings["dimensions"])
+                got, spent = self._embed(batch, settings["embed_model"], settings["dimensions"])
                 vectors += got
                 used += spent
             with self.db:
+                self._clear_chunks(doc["id"])
                 for item, vector in zip(pieces, vectors):
                     cursor = self.db.execute(
                         "INSERT INTO kb_chunks(doc_id, kb_id, position, heading, text, tokens,"
                         " embedding) VALUES (?,?,?,?,?,?,?)",
-                        (doc_id, doc["kb_id"], item.position, item.heading, item.text,
+                        (doc["id"], doc["kb_id"], item.position, item.heading, item.text,
                          item.tokens, pack(vector)))
                     self.db.execute("INSERT INTO kb_fts(rowid, heading, text) VALUES (?, ?, ?)",
                                     (cursor.lastrowid, item.heading, item.text))
                 self.db.execute(
-                    "UPDATE kb_documents SET status = 'ready', chunks = ?, tokens = ?,"
-                    " embed_tokens = ? WHERE id = ?",
-                    (len(pieces), sum(p.tokens for p in pieces), used, doc_id))
-        except KnowledgeError as error:
-            self.db.execute("UPDATE kb_documents SET status = 'failed', error = ? WHERE id = ?",
-                            (str(error), doc_id))
-        except Exception as error:  # scanner, embedding API or other failure: no messages
-            reason = ("Gitleaks is not available; set AUTOSDE_GITLEAKS to scan documents."
-                      if type(error).__name__ == "ScanUnavailable"
-                      else f"Embedding failed ({type(error).__name__}).")
-            self.db.execute("UPDATE kb_documents SET status = 'failed', error = ? WHERE id = ?",
-                            (reason, doc_id))
+                    "UPDATE kb_documents SET status = 'ready', error = NULL, chunks = ?, tokens = ?,"
+                    " embed_tokens = embed_tokens + ?, strategy = ? WHERE id = ?",
+                    (len(pieces), sum(p.tokens for p in pieces), used, settings["strategy"], doc["id"]))
+        except Exception as error:
+            self._fail(doc["id"], error)
 
-    def delete_document(self, doc_id):
+    def _clear_chunks(self, doc_id):
         for row in self._all("SELECT id FROM kb_chunks WHERE doc_id = ?", doc_id):
             self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (row["id"],))
         self.db.execute("DELETE FROM kb_chunks WHERE doc_id = ?", (doc_id,))
+
+    def rechunk(self, kb_id):
+        """Mark documents with stored text for re-indexing; returns (doc rows, skipped names)."""
+        docs = self._all("SELECT * FROM kb_documents WHERE kb_id = ?", kb_id)
+        ready = [d for d in docs if d["content"]]
+        for doc in ready:
+            self.db.execute("UPDATE kb_documents SET status = 'processing' WHERE id = ?", (doc["id"],))
+        return ready, [d["name"] for d in docs if not d["content"]]
+
+    def reindex(self, docs):
+        for doc in docs:
+            self._index(doc, doc["content"])
+
+    def preview(self, kb_id, *, doc_id=None, text=None, settings=None):
+        """Chunks a strategy would produce, without storing anything."""
+        from autosde.chunking import stats
+
+        base = self.base(kb_id)
+        merged = settings_for({**base["settings"], **(settings or {})})
+        if doc_id is not None:
+            rows = self._all("SELECT name, content FROM kb_documents WHERE id = ? AND kb_id = ?",
+                             doc_id, kb_id)
+            if not rows or not rows[0]["content"]:
+                raise KnowledgeError("That document has no stored text; upload it again to preview.")
+            name, text = rows[0]["name"], rows[0]["content"]
+        else:
+            text = (text or "").strip()
+            if not text or len(text) > 200_000:
+                raise KnowledgeError("Paste between 1 and 200,000 characters to preview.")
+            if self.scan(text):
+                raise KnowledgeError("Gitleaks flagged a possible secret in that text.")
+            name = "pasted text"
+        pieces = self._split(name, text, merged)
+        return {"strategy": merged["strategy"], "stats": stats(pieces),
+                "chunks": [{"position": p.position, "heading": p.heading, "text": p.text,
+                            "tokens": p.tokens} for p in pieces[:500]]}
+
+    def delete_document(self, doc_id):
+        self._clear_chunks(doc_id)
         self.db.execute("DELETE FROM kb_documents WHERE id = ?", (doc_id,))
 
     def chunks(self, doc_id):
@@ -495,7 +578,7 @@ class Knowledge:
                               []).append(base["id"])
         scored = []
         for (model, dims), ids in groups.items():
-            [qvec], _ = self.embed([query[:8000]], model, dims)
+            [qvec], _ = self._embed([query[:8000]], model, dims)
             q = unpack(pack(qvec))
             rows = self.db.execute(
                 f"SELECT id, embedding FROM kb_chunks WHERE kb_id IN ({','.join('?' * len(ids))})",

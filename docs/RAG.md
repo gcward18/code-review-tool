@@ -25,7 +25,21 @@ agent call ─► build query ─► vector rank ┐                         │
 
 Files are limited to 20 MB. Other binary files are refused.
 
-## 2. Chunking: structure-aware, packed, with overlap
+## 2. Chunking
+
+Each knowledge base picks a strategy on the Knowledge page (the panel under the dropdown explains each one). Every strategy respects the chunk size, labels each chunk with the heading path where it starts, and embeds that path with the chunk.
+
+| Strategy | How it splits | Best for | Trade-off |
+| --- | --- | --- | --- |
+| **Structure-aware** (default) | Markdown headings and code definitions, whole paragraphs and fences, packed to size with overlap | Docs with headings, READMEs, specs, code | Uneven sizes |
+| **Recursive** | Blank lines, then lines, sentences, words, only as far as needed; merged back to size with overlap | Mixed or unknown documents | Can span two sections |
+| **Fixed-size** | Equal token windows sliding by size minus overlap, cut at spaces | Logs, transcripts, exports | Cuts through ideas |
+| **Sentence** | Whole sentences packed to size; overlap carries trailing sentences | Prose, policies, FAQs | Heuristic sentence detection |
+| **Semantic** | Embeds each sentence with its neighbours and breaks where adjacent sentences differ most (top percentile and above the document's usual drift) | Long documents that drift between topics | Embeds every sentence while chunking (up to 3,000 sentences) |
+
+The **Chunk lab** previews any strategy on a stored document or pasted text, with chunk counts and sizes, without saving. Changing the strategy applies to new uploads; **Re-chunk** rebuilds existing documents from their stored text.
+
+### Structure-aware in detail
 
 The goal is chunks that each answer one kind of question and still make sense on their own.
 

@@ -1,0 +1,23 @@
+[project]
+name = "autosde"
+version = "0.1.0"
+description = "Local code review of commit ranges by an agent team; results in SQLite"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+autosde = "autosde.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["autosde*"]
+
+[tool.setuptools.package-data]
+autosde = ["prompts/*.md", "prompts/focus/*.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

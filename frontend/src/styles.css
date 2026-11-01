@@ -126,3 +126,4 @@ header a.active { font-weight: 700; }
 .add { margin-top: 12px; } .add input { flex: 1 1 200px; width: auto; }
 .prompt { margin-bottom: 10px; }
 .picker { align-items: flex-end; margin-bottom: 12px; } .picker .add { margin: 0; flex: 1 1 260px; }
+.warn-text { color: var(--warn); }

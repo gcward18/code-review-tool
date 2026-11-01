@@ -148,6 +148,11 @@ export default function Agents({ defaultModel }) {
                 </label>
               )}
               {modelField(name)}
+              <label className="toggle small">
+                <input type="checkbox" checked={item.trace !== false}
+                  onChange={(e) => agent(name, "trace", e.target.checked)} />
+                Trace this agent to LangSmith
+              </label>
               {!core && (
                 <label className="field">
                   <span className="small muted">Focus</span>
@@ -160,6 +165,39 @@ export default function Agents({ defaultModel }) {
             </div>
           );
         })()}
+      </div>
+
+      <div className="card">
+        <h3>LangSmith</h3>
+        <label className="toggle">
+          <input type="checkbox" checked={draft.config.langsmith.enabled}
+            onChange={(e) => edit((d) => { d.config.langsmith.enabled = e.target.checked; })} />
+          Send each review to LangSmith as a trace
+        </label>
+        <div className="range">
+          <label className="field">
+            <span className="small muted">Project</span>
+            <input value={draft.config.langsmith.project}
+              onChange={(e) => edit((d) => { d.config.langsmith.project = e.target.value; })} />
+          </label>
+          <label className="field">
+            <span className="small muted">Region</span>
+            <select value={draft.config.langsmith.endpoint}
+              onChange={(e) => edit((d) => { d.config.langsmith.endpoint = e.target.value; })}>
+              <option value="https://api.smith.langchain.com">US</option>
+              <option value="https://eu.api.smith.langchain.com">EU</option>
+            </select>
+          </label>
+        </div>
+        <p className="small">
+          {draft.langsmith_key
+            ? <span className="ok">LANGSMITH_API_KEY is set.</span>
+            : <span className="warn-text">LANGSMITH_API_KEY is not set. Export it before starting <code>autosde serve</code>.</span>}
+        </p>
+        <p className="small muted">
+          Traces include each traced agent's full prompt, the reviewed code, and its reply.
+          Text that gitleaks flags is withheld.
+        </p>
       </div>
 
       <div className="card">

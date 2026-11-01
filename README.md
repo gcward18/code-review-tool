@@ -70,3 +70,11 @@ npm run dev                                   # live reload; proxies /api to `au
 ```
 
 The earlier AWS version is preserved in the `Code Review Service` repository at the `aws-deployment-v1` tag.
+
+## LangSmith tracing
+
+Turn it on from the Agents page (or `langsmith` in `autosde/prompts/agents.json`) and
+export `LANGSMITH_API_KEY` (plus `LANGSMITH_WORKSPACE_ID` for multi-workspace keys)
+before running `autosde`. Each review becomes one trace with a child run per agent
+call, containing the full prompt, the reviewed code and the reply. Untick "Trace this
+agent" to leave an agent out. Text gitleaks flags is withheld.

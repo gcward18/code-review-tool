@@ -5,6 +5,7 @@ with the code. Missing entries fall back to the defaults below.
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -25,6 +26,8 @@ SYSTEM_PROMPTS = {"coordinator": "coordinator.md", "aggregator": "aggregator.md"
                   "specialist": "specialist.md"}
 _EXT = re.compile(r"\.[A-Za-z0-9_+-]{1,16}")
 _MODEL = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+LANGSMITH_ENDPOINTS = ("https://api.smith.langchain.com", "https://eu.api.smith.langchain.com")
+_PROJECT = re.compile(r"[A-Za-z0-9 ._:-]{1,100}")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
@@ -37,7 +40,10 @@ def defaults():
               for name, ext in SPECIALISTS.items()}
     agents["coordinator"] = {"enabled": True, "model": None}
     agents["aggregator"] = {"enabled": True, "model": None}
-    return {"agents": agents}
+    for item in agents.values():
+        item["trace"] = True
+    return {"agents": agents, "langsmith": {"enabled": False, "project": "autosde",
+                                            "endpoint": LANGSMITH_ENDPOINTS[0]}}
 
 
 def validate(config):
@@ -48,7 +54,12 @@ def validate(config):
     for name, item in config["agents"].items():
         if not isinstance(name, str) or not _NAME.fullmatch(name) or not isinstance(item, dict):
             raise ConfigError(f"Invalid agent entry: {name!r}")
-        entry = clean["agents"].setdefault(name, {"enabled": True, "extensions": [], "model": None})
+        entry = clean["agents"].setdefault(name, {"enabled": True, "extensions": [], "model": None,
+                                                         "trace": True})
+        if "trace" in item:
+            if not isinstance(item["trace"], bool):
+                raise ConfigError(f"{name}: trace must be true or false.")
+            entry["trace"] = item["trace"]
         if "enabled" in item:
             if not isinstance(item["enabled"], bool):
                 raise ConfigError(f"{name}: enabled must be true or false.")
@@ -70,6 +81,21 @@ def validate(config):
                     raise ConfigError(f"{name}: invalid extension {ext!r}.")
                 cleaned.append(ext)
             entry["extensions"] = cleaned
+    langsmith = config.get("langsmith", {})
+    if not isinstance(langsmith, dict):
+        raise ConfigError("langsmith must be an object.")
+    if "enabled" in langsmith:
+        if not isinstance(langsmith["enabled"], bool):
+            raise ConfigError("langsmith.enabled must be true or false.")
+        clean["langsmith"]["enabled"] = langsmith["enabled"]
+    if "project" in langsmith:
+        if not isinstance(langsmith["project"], str) or not _PROJECT.fullmatch(langsmith["project"]):
+            raise ConfigError("LangSmith project: letters, digits, spaces and ._:- only.")
+        clean["langsmith"]["project"] = langsmith["project"]
+    if "endpoint" in langsmith:
+        if langsmith["endpoint"] not in LANGSMITH_ENDPOINTS:
+            raise ConfigError("Unknown LangSmith endpoint.")
+        clean["langsmith"]["endpoint"] = langsmith["endpoint"]
     for name, entry in clean["agents"].items():
         for ext in entry.get("extensions", []):
             if ext in seen and seen[ext] != name:
@@ -134,6 +160,7 @@ def snapshot():
     config = load_config()
     return {
         "config": config,
+        "langsmith_key": bool(os.environ.get("LANGSMITH_API_KEY")),
         "prompts": {kind: read_prompt(kind) for kind in SYSTEM_PROMPTS},
         "focus": {name: read_prompt("focus", name) for name in config["agents"]
                   if name not in ("coordinator", "aggregator")},

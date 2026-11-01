@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from autosde import git
+from autosde import git, tracing
 from autosde.scan import ScanUnavailable, scanner
 from autosde.team import Team, TeamResult
 
@@ -53,6 +53,8 @@ def prepare(repo, range_spec, *, store, model, settings, scan=None, on_start=Non
             if rules:
                 item.skipped = f"possible secret ({', '.join(rules)}); not sent"
                 item.head = ""
+        model = tracing.traced(model, review_id=review_id, scan=scan,
+                               name=f"{changes.name} {range_spec} (review {review_id})")
         team = Team(model)
         result = team.plan(changes.files)
         store.save_plan(review_id, result, changes.files, input_price=settings.input_price,
@@ -79,12 +81,19 @@ def approve(pending, *, store, settings, selection=None):
         )
     except Exception as error:
         store.fail_review(pending.review_id, type(error).__name__)
+        tracing.finish(pending.team.model, {"status": "failed"})
         raise
+    tracing.finish(pending.team.model, {
+        "status": "completed", "plan": result.plan,
+        "findings": [{"agent": f.agent, "file": f.file, "line": f.start_line, "title": f.title,
+                      "severity": f.severity, "kept": f.kept} for f in result.findings],
+    })
     return pending.review_id
 
 
 def cancel(pending, *, store):
     store.cancel_review(pending.review_id, pending.result)
+    tracing.finish(pending.team.model, {"status": "cancelled"})
 
 
 def run_review(repo, range_spec, *, store, model, settings, scan=None, on_start=None,
@@ -95,5 +104,6 @@ def run_review(repo, range_spec, *, store, model, settings, scan=None, on_start=
     if not pending.result.plan:
         store.finish_review(pending.review_id, pending.result,
                             input_price=settings.input_price, output_price=settings.output_price)
+        tracing.finish(pending.team.model, {"status": "completed", "plan": {}})
         return pending.review_id
     return approve(pending, store=store, settings=settings, selection=selection)

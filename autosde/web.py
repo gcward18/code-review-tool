@@ -381,6 +381,8 @@ def handler_for(app):
                     return self._json(200, app.models())
                 if path == "/api/agents":
                     return self._json(200, agents.snapshot())
+                if path == "/api/agent-runs":
+                    return self._json(200, app.store.agents())
                 if path == "/api/projects":
                     return self._json(200, app.store.projects())
                 if path == "/api/reviews":

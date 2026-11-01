@@ -140,6 +140,10 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.get("/api/projects")[0]["name"], "calculator")
         project = self.get("/api/projects/1")
         self.assertIn("coordinator", [a["agent"] for a in project["agents"]])
+        runs = self.get("/api/agent-runs")
+        self.assertEqual({(r["project"], r["agent"]) for r in runs},
+                         {("calculator", "coordinator"), ("calculator", "python"),
+                          ("calculator", "aggregator")})
         with self.assertRaises(urllib.error.HTTPError) as again:  # already decided
             self.post(f"/api/reviews/{review_id}/approve", {"files": []})
         self.assertEqual(self.status(again), 409)

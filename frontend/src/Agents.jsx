@@ -20,11 +20,13 @@ export default function Agents({ defaultModel }) {
   const [selected, setSelected] = useState("python");
   const [models, setModels] = useState({});
   const [custom, setCustom] = useState({});
+  const [runs, setRuns] = useState(null);
 
   useEffect(() => {
     api.agents().then((data) => (setSaved(data), setDraft(clone(data))))
       .catch((e) => setStatus({ kind: "error", text: e.message }));
     api.models().then(setModels).catch(() => setModels({ source: "unavailable" }));
+    api.agentRuns().then(setRuns).catch(() => setRuns([]));
   }, []);
 
   if (!draft) return <div className={`card ${status.kind || "muted"}`}>{status.text || "Loading…"}</div>;
@@ -167,6 +169,24 @@ export default function Agents({ defaultModel }) {
           );
         })()}
       </div>
+
+      <details className="card">
+        <summary>Agent runs{runs ? ` (${runs.reduce((n, r) => n + r.runs, 0)})` : ""}</summary>
+        {runs?.length ? (
+          <table>
+            <thead><tr><th>Project</th><th>Role</th><th>Agent</th><th>Runs</th><th>OK</th><th>Failed</th><th>Tokens</th><th>Kept</th></tr></thead>
+            <tbody>
+              {runs.map((r) => (
+                <tr key={r.project + r.role + r.agent}>
+                  <td>{r.project}</td><td>{r.role}</td><td>{r.agent}</td><td>{r.runs}</td>
+                  <td>{r.succeeded}</td><td className={r.failed ? "error" : ""}>{r.failed}</td>
+                  <td>{r.input_tokens}/{r.output_tokens}</td><td>{r.findings_kept}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p className="muted small">{runs ? "No agent runs yet." : "Loading…"}</p>}
+      </details>
 
       <div className="card">
         <h3>LangSmith</h3>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import Agents from "./Agents.jsx";
 import Markdown from "./Markdown.jsx";
+import Workspace, { Panel } from "./Workspace.jsx";
 
 const THEMES = ["light", "dark", "dracula"];
 const ago = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "–");
@@ -115,6 +116,12 @@ function Settings({ theme, setTheme, prefs, setPrefs, onRescan }) {
         </select>
       </label>
       <label className="toggle setting">
+        <input type="checkbox" checked={!!prefs.showAgents}
+          onChange={(e) => setPrefs({ showAgents: e.target.checked })} />
+        Show agent runs on project and review pages
+      </label>
+      <p className="small muted">Off: agent details appear only on the Agents page.</p>
+      <label className="toggle setting">
         <input type="checkbox" checked={prefs.showBlocked}
           onChange={(e) => setPrefs({ showBlocked: e.target.checked })} />
         Show blocked folders and projects
@@ -140,8 +147,12 @@ function Options({ items }) {
   ));
 }
 
-function RangePicker({ repoPath, onStarted, onOpen }) {
+function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
   const [repo, setRepo] = useState(null);
+  const [project, setProject] = useState(null);
+  useEffect(() => {
+    if (repo?.project_id) api.project(repo.project_id).then(setProject);
+  }, [repo?.project_id]);
   const [from, setFrom] = useState("");
   const [older, setOlder] = useState(null);
   const [to, setTo] = useState("");
@@ -190,15 +201,9 @@ function RangePicker({ repoPath, onStarted, onOpen }) {
 
   if (error && !repo) return <div className="card error">{error}</div>;
   if (!repo) return <div className="card muted">Loading repository…</div>;
-  return (
-    <div className={repo.project_id ? "split" : ""}>
-    <div className="col">
-    <div className="card">
-      <div className="actions title">
-        <h2 className="grow">
-          {repo.name} <code className="muted small">{repo.path}</code>
-        </h2>
-      </div>
+  const picker = (
+    <>
+      <code className="muted small path">{repo.path}</code>
       <div className="range">
         <label>
           From <span className="muted small">(newer)</span>
@@ -226,13 +231,22 @@ function RangePicker({ repoPath, onStarted, onOpen }) {
         first (paths only); you approve before any code is sent.
       </p>
       {error && <p className="error">{error}</p>}
-    </div>
-    {repo.project_id && <Chat projectId={repo.project_id} />}
-    </div>
-    {repo.project_id && (
-      <div className="col"><ProjectHistory projectId={repo.project_id} onOpen={onOpen} /></div>
-    )}
-    </div>
+    </>
+  );
+  if (!repo.project_id) {
+    return <div className="card"><h2>{repo.name}</h2>{picker}</div>;
+  }
+  return (
+    <Workspace
+      topLeft={<Panel title={`New review · ${repo.name}`}>{picker}</Panel>}
+      bottomLeft={<Chat projectId={repo.project_id} />}
+      topRight={<Panel title={`Reviews${project ? ` (${project.reviews.length})` : ""}`}>
+        {project ? <ReviewTable reviews={project.reviews} onOpen={onOpen} /> : <p className="muted">Loading…</p>}
+      </Panel>}
+      bottomRight={showAgents && <Panel title="Agents that ran">
+        {project ? <AgentsTable agents={project.agents} /> : <p className="muted">Loading…</p>}
+      </Panel>}
+    />
   );
 }
 
@@ -321,7 +335,7 @@ function Plan({ review, onDecided }) {
   );
 }
 
-function Review({ id, onProject, onContext }) {
+function Review({ id, onProject, onContext, showAgents }) {
   const [review, setReview] = useState(null);
   const [error, setError] = useState("");
   const load = useCallback(() => api.review(id).then((r) => {
@@ -387,7 +401,7 @@ function Review({ id, onProject, onContext }) {
           ))}
         </details>
       )}
-      {review.agent_runs.length > 0 && (
+      {showAgents && review.agent_runs.length > 0 && (
         <details className="card">
           <summary>Agents ({review.agent_runs.length})</summary>
           <table>
@@ -538,16 +552,13 @@ function Chat({ projectId }) {
     }
   };
 
+  const clear = messages?.length > 0 && (
+    <button className="secondary" onClick={() => api.clearChat(projectId).then((d) => setMessages(d.messages))}>
+      Clear
+    </button>
+  );
   return (
-    <div className="card chat">
-      <div className="actions title">
-        <h3 className="grow">Chat about this project's history</h3>
-        {messages?.length > 0 && (
-          <button className="secondary" onClick={() => api.clearChat(projectId).then((d) => setMessages(d.messages))}>
-            Clear
-          </button>
-        )}
-      </div>
+    <Panel title="Chat about this project's history" actions={clear} className="chat">
       <div className="messages">
         {messages?.length === 0 && (
           <p className="muted small">Ask about past reviews, e.g. "Which files keep getting findings?" or "What did review #10 find?"</p>
@@ -570,37 +581,22 @@ function Chat({ projectId }) {
           onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send(e)} />
         <button type="submit" disabled={busy || !draft.trim()}>Send</button>
       </form>
-    </div>
+    </Panel>
   );
 }
 
-// Right column of a project: its reviews and the agents that ran.
-function ProjectHistory({ projectId, onOpen }) {
-  const [project, setProject] = useState(null);
-  useEffect(() => {
-    api.project(projectId).then(setProject);
-  }, [projectId]);
-  if (!project) return <div className="card muted">Loading history…</div>;
+function AgentsTable({ agents }) {
   return (
-    <>
-      <div className="card">
-        <h3>Reviews</h3>
-        <ReviewTable reviews={project.reviews} onOpen={onOpen} />
-      </div>
-      <div className="card">
-        <h3>Agents that ran</h3>
-        <table>
-          <thead><tr><th>Role</th><th>Agent</th><th>Runs</th><th>OK</th><th>Failed</th><th>Kept</th></tr></thead>
-          <tbody>
-            {project.agents.map((a) => (
-              <tr key={a.role + a.agent}>
-                <td>{a.role}</td><td>{a.agent}</td><td>{a.runs}</td><td>{a.succeeded}</td><td>{a.failed}</td><td>{a.findings_kept}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+    <table>
+      <thead><tr><th>Role</th><th>Agent</th><th>Runs</th><th>OK</th><th>Failed</th><th>Kept</th></tr></thead>
+      <tbody>
+        {agents.map((a) => (
+          <tr key={a.role + a.agent}>
+            <td>{a.role}</td><td>{a.agent}</td><td>{a.runs}</td><td>{a.succeeded}</td><td>{a.failed}</td><td>{a.findings_kept}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -673,6 +669,7 @@ export default function App() {
           onClick={() => (window.matchMedia("(max-width: 760px)").matches
             ? setDrawer(!drawer) : setPrefs({ collapsed: !prefs.collapsed }))}>☰</button>
         <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>AutoSDE</a>
+        <Crumbs view={view} canGoBack={history.length > 0} onBack={back} go={go} />
         <span className="grow" />
         <a href="#" className={view.kind === "agents" ? "active" : ""}
           onClick={(e) => (e.preventDefault(), go({ kind: "agents" }))}>Agents</a>
@@ -685,7 +682,6 @@ export default function App() {
       </aside>
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
       <main>
-        <Crumbs view={view} canGoBack={history.length > 0} onBack={back} go={go} />
         {error && <div className="card error">{error}</div>}
         {session && view.kind === "home" && (
           <Home onOpen={(id) => go({ kind: "review", id })} onProject={(id) => go({ kind: "project", id })} />
@@ -693,10 +689,10 @@ export default function App() {
         {view.kind === "repo" && (
           <RangePicker key={view.repo} repoPath={view.repo}
             onStarted={(id) => go({ kind: "review", id, repo: view.repo })}
-            onOpen={(id) => go({ kind: "review", id, repo: view.repo })} />
+            onOpen={(id) => go({ kind: "review", id, repo: view.repo })} showAgents={prefs.showAgents} />
         )}
         {view.kind === "review" && (
-          <Review key={view.id} id={view.id} onContext={context} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
+          <Review key={view.id} id={view.id} onContext={context} showAgents={prefs.showAgents} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
         )}
         {view.kind === "settings" && (
           <Settings theme={theme} setTheme={setTheme} prefs={prefs} setPrefs={setPrefs}

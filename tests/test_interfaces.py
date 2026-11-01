@@ -85,7 +85,10 @@ class CliTests(Seeded):
 class ReportTests(Seeded):
     def test_text_and_sarif(self):
         review = self.store.review(self.seed())
-        self.assertIn("Fix: Use total += item", report.text(review))
+        self.assertIn('      Fix:\n        Use total += item["price"].', report.text(review))
+        review["findings"][0]["recommendation"] = "@@ lines 4-4 @@\n-         total = x\n+         total += x"
+        self.assertIn("        @@ lines 4-4 @@\n        -         total = x\n        +         total += x",
+                      report.text(review))
         location = report.sarif(review)["runs"][0]["results"][0]["locations"][0]
         self.assertEqual(location["physicalLocation"]["artifactLocation"]["uri"], "calculator.py")
 

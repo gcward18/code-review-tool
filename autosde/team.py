@@ -281,7 +281,7 @@ class Team:
         result.calls.append(call)
         listing = [
             {k: getattr(f, k) for k in ("id", "agent", "file", "start_line", "end_line",
-                                        "severity", "title", "description")}
+                                        "severity", "title", "description", "recommendation")}
             for f in result.findings
         ]
         data = self._ask(call, prompt("aggregator.md"), json.dumps({"findings": listing}),

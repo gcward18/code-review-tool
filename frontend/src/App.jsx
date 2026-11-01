@@ -331,7 +331,8 @@ function Review({ id, onProject }) {
           </p>
           <p><code>{f.file}:{f.start_line}{f.end_line !== f.start_line ? `–${f.end_line}` : ""}</code></p>
           <p>{f.description}</p>
-          <p><b>Fix:</b> {f.recommendation}</p>
+          <p><b>Fix</b></p>
+          <Fix text={f.recommendation} />
         </div>
       ))}
       {rejected.length > 0 && (
@@ -440,6 +441,21 @@ function Home({ onOpen, onProject }) {
         <ReviewTable reviews={reviews} onOpen={onOpen} />
       </div>
     </>
+  );
+}
+
+// Diff-style recommendations: "@@ lines a-b @@", "- old", "+ new", "  context".
+function Fix({ text }) {
+  const lines = (text || "").split("\n");
+  if (!lines.some((l) => /^(@@|[-+] )/.test(l))) return <p>{text}</p>;
+  return (
+    <pre className="fix">
+      {lines.map((line, i) => {
+        const kind = line.startsWith("@@") ? "hunk" : line.startsWith("+ ") ? "add"
+          : line.startsWith("- ") ? "del" : "";
+        return <div key={i} className={kind}>{line || " "}</div>;
+      })}
+    </pre>
   );
 }
 

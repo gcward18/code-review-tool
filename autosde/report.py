@@ -65,7 +65,8 @@ def text(review):
         lines += [
             f"  {f['file']}:{f['start_line']}: {f['severity'].upper()} {f['title']}  [{f['agent']}]",
             f"      {f['description']}",
-            f"      Fix: {f['recommendation']}",
+            "      Fix:",
+            *(f"        {line}" for line in f["recommendation"].splitlines()),
         ]
     if rejected:
         lines += ["", f"Rejected by the aggregator ({len(rejected)}):"]

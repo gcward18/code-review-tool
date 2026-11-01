@@ -127,3 +127,8 @@ header a.active { font-weight: 700; }
 .prompt { margin-bottom: 10px; }
 .picker { align-items: flex-end; margin-bottom: 12px; } .picker .add { margin: 0; flex: 1 1 260px; }
 .warn-text { color: var(--warn); }
+pre.fix { font: 13px/1.5 ui-monospace, Menlo, monospace; background: var(--code); border-radius: 6px; padding: 8px 0; overflow-x: auto; margin: 4px 0; }
+pre.fix div { padding: 0 12px; white-space: pre; }
+pre.fix .add { background: color-mix(in srgb, var(--ok) 18%, transparent); }
+pre.fix .del { background: color-mix(in srgb, var(--error) 18%, transparent); }
+pre.fix .hunk { color: var(--muted); }

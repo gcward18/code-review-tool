@@ -11,9 +11,9 @@ const money = (n) => `$${(n || 0).toFixed(4)}`;
 function useTheme() {
   const [theme, setTheme] = useState(() => {
     try {
-      return localStorage.getItem("autosde-theme") || "dracula";
+      return localStorage.getItem("autosde-theme") || "light";
     } catch {
-      return "dracula";
+      return "light";
     }
   });
   useEffect(() => {
@@ -665,7 +665,7 @@ export default function App() {
         <button className="menu" aria-label="Toggle projects menu"
           onClick={() => (window.matchMedia("(max-width: 760px)").matches
             ? setDrawer(!drawer) : setPrefs({ collapsed: !prefs.collapsed }))}>☰</button>
-        <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>AutoSDE</a>
+        <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}><span className="brand-mark">A</span>AutoSDE</a>
         <Crumbs view={view} canGoBack={history.length > 0} onBack={back} go={go} />
         <span className="grow" />
         <a href="#" className={view.kind === "agents" ? "active" : ""}

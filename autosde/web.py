@@ -344,7 +344,8 @@ def handler_for(app):
             self.send_header("Cache-Control", "no-store")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
+                "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;"
+                " font-src https://fonts.gstatic.com; img-src 'self' data:",
             )
             for key, value in (extra or {}).items():
                 self.send_header(key, value)

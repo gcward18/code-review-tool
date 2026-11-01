@@ -1,20 +1,31 @@
 /* Themes: light, dark and Dracula (draculatheme.com palette). */
+:root {
+  --font-body: "Atkinson Hyperlegible", ui-sans-serif, system-ui, sans-serif;
+  --font-code: "Fira Code", Consolas, ui-monospace, monospace;
+}
+/* Light and dark follow The Curious Engineer palette. */
 :root,
 [data-theme="light"] {
-  --tok-keyword: #8e44ad; --tok-string: #1f7a3d; --tok-number: #b35c00; --tok-comment: #8a919c; --tok-call: #2457c5;
-  --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6eb; --text: #1d2433; --muted: #6b7380;
-  --accent: #2457c5; --accent-text: #ffffff; --hover: #eef2fb; --select: #dbe6fb;
-  --ok: #1f7a3d; --error: #c2313a; --warn: #b26b00; --code: #f0f2f5;
-  --sev-critical: #c2313a; --sev-high: #d0453a; --sev-medium: #c77a00; --sev-low: #5b6474;
+  --tok-keyword: #481cab; --tok-string: #1d8a74; --tok-number: #b35c00; --tok-comment: #8a8a8a; --tok-call: #2f6fd6;
+  --bg: #ffffff; --panel: #ffffff; --surface: #f5f5f5; --line: #e0e0e0; --ink: #000000; --text: #333333; --muted: #6e6e6e;
+  --accent: #481cab; --accent-text: #ffffff; --accent-soft: #eee9fb; --highlight: #48cab1; --highlight-soft: #e4f8f4;
+  --hover: #f5f5f5; --select: #eee9fb;
+  --ok: #1d8a74; --error: #c2313a; --warn: #b26b00; --code: #f5f5f5; --code-bg: #222222; --code-text: #f5f5f5;
+  --sev-critical: #c2313a; --sev-high: #d0453a; --sev-medium: #c77a00; --sev-low: #6e6e6e;
+  --shadow: 0 14px 40px rgba(35, 20, 68, .08);
 }
 [data-theme="dark"] {
-  --tok-keyword: #c792ea; --tok-string: #a5d6a7; --tok-number: #f78c6c; --tok-comment: #6b7380; --tok-call: #82aaff;
-  --bg: #0f1218; --panel: #171b23; --line: #2a303b; --text: #e3e7ee; --muted: #8b93a1;
-  --accent: #5b8def; --accent-text: #0f1218; --hover: #1f2531; --select: #233452;
-  --ok: #4cc276; --error: #ff6b6b; --warn: #f0b84d; --code: #1f2531;
-  --sev-critical: #ff5c5c; --sev-high: #ff7a59; --sev-medium: #f0b84d; --sev-low: #8b93a1;
+  --tok-keyword: #a987ff; --tok-string: #63d9c2; --tok-number: #f7a26c; --tok-comment: #8a8494; --tok-call: #82aaff;
+  --bg: #17151c; --panel: #1c1922; --surface: #211e29; --line: #383241; --ink: #ffffff; --text: #e5e2ea; --muted: #aaa4b3;
+  --accent: #a987ff; --accent-text: #17151c; --accent-soft: #30244c; --highlight: #63d9c2; --highlight-soft: #183d37;
+  --hover: #211e29; --select: #30244c;
+  --ok: #63d9c2; --error: #ff6b6b; --warn: #f0b84d; --code: #211e29; --code-bg: #0e0d11; --code-text: #f5f5f5;
+  --sev-critical: #ff5c5c; --sev-high: #ff7a59; --sev-medium: #f0b84d; --sev-low: #aaa4b3;
+  --shadow: 0 14px 40px rgba(0, 0, 0, .25);
 }
 [data-theme="dracula"] {
+  --surface: #2f3242; --ink: #ffffff; --accent-soft: #44475a; --highlight: #8be9fd; --highlight-soft: #2b3a4a;
+  --code-bg: #21222c; --code-text: #f8f8f2; --shadow: 0 14px 40px rgba(0, 0, 0, .3);
   --tok-keyword: #ff79c6; --tok-string: #f1fa8c; --tok-number: #bd93f9; --tok-comment: #6272a4; --tok-call: #50fa7b;
   --bg: #282a36; --panel: #2f3242; --line: #44475a; --text: #f8f8f2; --muted: #9aa0c3;
   --accent: #bd93f9; --accent-text: #282a36; --hover: #3a3d52; --select: #44475a;
@@ -26,11 +37,11 @@
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg); color: var(--text);
-  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font: 15px/1.5 var(--font-body);
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-code { font: 13px ui-monospace, Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+code { font: 12.5px var(--font-code); background: var(--code); padding: 1px 5px; border-radius: 4px; }
 h2 { font-size: 18px; margin: 0 0 10px; }
 h3 { font-size: 15px; margin: 18px 0 8px; }
 .muted { color: var(--muted); } .small { font-size: 13px; } .grow { flex: 1; }
@@ -212,3 +223,43 @@ button.icon { padding: 2px 8px; line-height: 1.2; }
   .workspace > .gutter-x, .stack > .gutter-y { display: none; }
   .stack-top, .stack-bottom { flex: none !important; height: 60vh; margin-bottom: 12px; }
 }
+
+/* --- The Curious Engineer look: Atkinson Hyperlegible text, Fira Code labels, purple accent. --- */
+h1, h2, h3, .panel-head h3 { color: var(--ink); letter-spacing: -0.02em; }
+h2 { font-size: 20px; font-weight: 700; }
+header { gap: 14px; background: var(--bg); }
+.brand { display: inline-flex; align-items: center; gap: 10px; font: 600 14.5px var(--font-code); color: var(--ink); }
+.brand:hover { text-decoration: none; }
+.brand-mark { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-text); font: 600 15px var(--font-code); }
+header > a:not(.brand) { font: 12px var(--font-code); color: var(--muted); padding: 6px 10px; border-radius: 8px; }
+header > a:not(.brand):hover { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
+header > a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.crumbs { font: 12px var(--font-code); color: var(--muted); }
+.crumbs b { color: var(--ink); font-weight: 600; }
+aside h3, .group h3 { font: 600 11px var(--font-code); letter-spacing: .12em; color: var(--accent); text-transform: uppercase; }
+.count { font: 10.5px var(--font-code); background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent); }
+.node { border-radius: 8px; font-size: 14px; }
+.node.selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.card, .panel { border-radius: 12px; border-color: var(--line); background: var(--panel); }
+.panel.max { box-shadow: var(--shadow); }
+.panel-head { background: var(--panel); }
+button { border-radius: 8px; font: 600 13px var(--font-body); }
+button.secondary { font-weight: 400; }
+button.icon { font-family: var(--font-code); }
+input, textarea, select { border-radius: 10px; font-family: var(--font-body); }
+input:focus, textarea:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 0; border-color: var(--accent); }
+.search { padding: 9px 12px; }
+th { font: 600 10.5px var(--font-code); letter-spacing: .1em; color: var(--muted); }
+.badge { font: 10.5px var(--font-code); padding: 2px 9px; border-radius: 999px; background: var(--highlight-soft);
+  color: var(--text); border: 1px solid color-mix(in srgb, var(--highlight) 45%, transparent); }
+.badge.warn { background: transparent; }
+.status-completed { background: var(--highlight-soft); color: var(--ok); }
+.md-code:not(.fix) { background: var(--code-bg); color: var(--code-text); border-color: var(--code-bg); }
+.md-code:not(.fix) .md-lang { color: #9a9a9a; }
+[data-theme="light"] .md-code:not(.fix), :root:not([data-theme]) .md-code:not(.fix) {
+  --tok-keyword: #c3a6ff; --tok-string: #63d9c2; --tok-number: #f7a26c; --tok-comment: #8a8a8a; --tok-call: #8ab4ff; }
+.md-inline, code { background: var(--accent-soft); color: var(--accent); }
+pre.fix, .md-code.fix { background: var(--surface); }
+.msg.user { background: var(--accent); color: var(--accent-text); }
+.msg.assistant { background: var(--surface); border: 1px solid var(--line); }

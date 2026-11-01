@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
+import Agents from "./Agents.jsx";
 
 const THEMES = ["light", "dark", "dracula"];
 const ago = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "–");
@@ -499,6 +500,8 @@ export default function App() {
         <button className="menu" onClick={() => setDrawer(!drawer)} aria-label="Folders">☰</button>
         <a className="brand" href="#" onClick={(e) => (e.preventDefault(), go({ kind: "home" }))}>AutoSDE</a>
         <span className="muted small grow">{session ? `model: ${session.model}` : ""}</span>
+        <a href="#" className={view.kind === "agents" ? "active" : ""}
+          onClick={(e) => (e.preventDefault(), go({ kind: "agents" }))}>Agents</a>
         <select value={theme} onChange={(e) => setTheme(e.target.value)} aria-label="Theme">
           {THEMES.map((t) => <option key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</option>)}
         </select>
@@ -519,6 +522,7 @@ export default function App() {
         {view.kind === "review" && (
           <Review key={view.id} id={view.id} onProject={(id) => go({ kind: "project", id })} />
         )}
+        {session && view.kind === "agents" && <Agents defaultModel={session.model} />}
         {view.kind === "project" && <Project id={view.id} onOpen={(id) => go({ kind: "review", id })} />}
       </main>
     </div>

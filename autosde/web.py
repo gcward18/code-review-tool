@@ -13,7 +13,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from autosde import git, report
+from autosde import agents, git, report
 from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, approve, cancel, prepare
 
@@ -278,6 +278,8 @@ def handler_for(app):
                     return self._json(200, app.repo(query.get("path")))
                 if path == "/api/older":
                     return self._json(200, app.older(query.get("path"), query.get("from", "")))
+                if path == "/api/agents":
+                    return self._json(200, agents.snapshot())
                 if path == "/api/projects":
                     return self._json(200, app.store.projects())
                 if path == "/api/reviews":
@@ -314,6 +316,11 @@ def handler_for(app):
             try:
                 if self.path == "/api/reviews":
                     return self._json(202, app.submit(body))
+                if self.path == "/api/agents":
+                    try:
+                        return self._json(200, agents.update(body))
+                    except agents.ConfigError as error:
+                        raise ApiError(400, str(error)) from None
                 if m := re.fullmatch(r"/api/reviews/(\d+)/(approve|cancel)", self.path):
                     return self._json(200, app.decide(int(m[1]), body, approved=m[2] == "approve"))
                 if m := re.fullmatch(r"/api/reviews/(\d+)/estimate", self.path):

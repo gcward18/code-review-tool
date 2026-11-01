@@ -105,3 +105,23 @@ details summary { cursor: pointer; font-weight: 600; }
   main { padding: 12px; }
   .arrow { display: none; }
 }
+
+/* Agents page */
+input, textarea {
+  font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 100%;
+}
+textarea { resize: vertical; font-size: 14px; }
+textarea.mono { font: 13px/1.5 ui-monospace, Menlo, monospace; margin-top: 8px; }
+header a.active { font-weight: 700; }
+.sticky { position: sticky; top: -20px; z-index: 5; }
+.sticky h2 { margin: 0; align-self: center; }
+.sticky p { margin: 8px 0 0; }
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.agent { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.agent.off { opacity: .55; }
+.field { display: flex; flex-direction: column; gap: 3px; }
+.toggle { display: flex; align-items: center; gap: 8px; }
+.toggle input { width: auto; }
+.add { margin-top: 12px; } .add input { flex: 1 1 200px; width: auto; }
+.prompt { margin-bottom: 10px; }

@@ -5,18 +5,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from autosde import agents
+from autosde.agents import SPECIALISTS, load_config, specialists
 from autosde.noise import flag
 
 PROMPTS = Path(__file__).parent / "prompts"
-EXTENSIONS = {
-    "python": (".py",),
-    "javascript": (".js", ".mjs", ".cjs", ".jsx"),
-    "typescript": (".ts", ".tsx"),
-    "java": (".java",),
-    "go": (".go",),
-    "csharp": (".cs",),
-}
-AGENTS = (*EXTENSIONS, "general")
+AGENTS = tuple(SPECIALISTS)
 SEVERITIES = ("critical", "high", "medium", "low")
 CATEGORIES = ("correctness", "security", "reliability", "performance", "maintainability")
 
@@ -109,15 +103,24 @@ VERDICT_SCHEMA = {
 
 def prompt(name, **values):
     """Prompt files are re-read on every call, so edits apply immediately."""
-    text = (PROMPTS / name).read_text()
+    text = (agents.PROMPTS / name).read_text()
     for key, value in values.items():
         text = text.replace("{" + key + "}", value)
     return text
 
 
-def route(path):
+def route(path, table=None):
+    """Pick the enabled specialist whose extensions match; `general` takes the rest."""
+    table = specialists(load_config()) if table is None else table
     lower = path.lower()
-    return next((a for a, ext in EXTENSIONS.items() if lower.endswith(ext)), "general")
+    return next((a for a, ext in table.items() if ext and lower.endswith(tuple(ext))), "general")
+
+
+def plan_schema(agents):
+    schema = json.loads(json.dumps(PLAN_SCHEMA))
+    item = schema["properties"]["assignments"]["items"]["properties"]["agent"]
+    item["enum"] = list(agents)
+    return schema
 
 
 def numbered(text):
@@ -180,12 +183,16 @@ class TeamResult:
 
 
 class Team:
-    def __init__(self, model, *, workers=4):
+    def __init__(self, model, *, workers=4, config=None):
         self.model, self.workers = model, workers
+        self._fixed = config  # tests pass one; otherwise agents.json is re-read per review
+        self.config = config or load_config()
 
     def _ask(self, call, system, text, schema, limit):
+        override = self.config["agents"].get(call.agent, {}).get("model")
         reply = self.model.complete(
-            role=call.agent, system=system, prompt=text, schema=schema, max_output_tokens=limit
+            role=call.agent, system=system, prompt=text, schema=schema, max_output_tokens=limit,
+            model=override,
         )
         call.input_tokens, call.output_tokens = reply.input_tokens, reply.output_tokens
         call.seconds = reply.seconds
@@ -199,6 +206,8 @@ class Team:
             return None
 
     def _plan(self, files, result):
+        self.config = self._fixed or load_config()
+        table = specialists(self.config)
         call = Call(role="coordinator", agent="coordinator", files=[f.path for f in files])
         result.calls.append(call)
         # Free rules first; the coordinator sees them and may flag more.
@@ -210,7 +219,7 @@ class Team:
             for f in files
         ]
         data = self._ask(call, prompt("coordinator.md"), json.dumps({"changed_files": listing}),
-                         PLAN_SCHEMA, 1500)
+                         plan_schema(table), 1500)
         paths = {f.path for f in files}
         for item in (data or {}).get("flagged", []):
             if item.get("file") in paths and item["file"] not in result.flagged:
@@ -219,7 +228,7 @@ class Team:
         for item in (data or {}).get("assignments", []):
             agent = item.get("agent")
             for path in item.get("files", []):
-                if agent in AGENTS and path not in assigned and any(f.path == path for f in files):
+                if agent in table and path not in assigned and any(f.path == path for f in files):
                     plan.setdefault(agent, {"files": [], "focus": item.get("focus", "")})
                     plan[agent]["files"].append(path)
                     assigned.add(path)
@@ -229,7 +238,7 @@ class Team:
         elif missing:
             result.limitations.append(f"Coordinator left {len(missing)} file(s) unassigned; routed by type.")
         for path in missing:
-            plan.setdefault(route(path), {"files": [], "focus": ""})["files"].append(path)
+            plan.setdefault(route(path, table), {"files": [], "focus": ""})["files"].append(path)
         result.plan = plan
         return plan
 
@@ -237,7 +246,7 @@ class Team:
         files = [by_path[p] for p in assignment["files"]]
         call = Call(role="specialist", agent=agent, files=[f.path for f in files],
                     focus=assignment["focus"])
-        focus_file = PROMPTS / "focus" / f"{agent}.md"
+        focus_file = agents.PROMPTS / "focus" / f"{agent}.md"
         focus = " ".join(
             part for part in (assignment["focus"], focus_file.read_text().strip() if focus_file.exists() else "")
             if part

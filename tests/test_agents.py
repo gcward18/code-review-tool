@@ -1,0 +1,61 @@
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from autosde import agents, git as capture_git
+from autosde.llm import ScriptedModel
+from autosde.team import Team, route
+from helpers import FINDING, PLAN, findings, repository, verdict
+
+
+class AgentConfigTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.prompts = Path(tmp.name) / "prompts"
+        shutil.copytree(agents.PROMPTS, self.prompts, ignore=shutil.ignore_patterns("agents.json"))
+        patcher = patch.object(agents, "PROMPTS", self.prompts)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.repo = repository(tmp.name)
+
+    def test_validation_rejects_conflicts_and_keeps_core_agents_on(self):
+        with self.assertRaises(agents.ConfigError):
+            agents.validate({"agents": {"go": {"extensions": [".py"]}}})
+        with self.assertRaises(agents.ConfigError):
+            agents.validate({"agents": {"python": {"model": "bad model;"}}})
+        clean = agents.validate({"agents": {"general": {"enabled": False}, "rust": {"extensions": ["rs"]}}})
+        self.assertTrue(clean["agents"]["general"]["enabled"])
+        self.assertEqual(clean["agents"]["rust"]["extensions"], [".rs"])
+
+    def test_disabled_specialist_routes_to_general_and_model_override_is_used(self):
+        agents.save_config({"agents": {"python": {"enabled": False},
+                                       "aggregator": {"model": "gpt-6-luna-mini"}}})
+        self.assertEqual(route("calculator.py"), "general")
+        files = capture_git.capture(self.repo, "HEAD~1..HEAD").files
+        model = ScriptedModel({"coordinator": [PLAN], "general": [findings(FINDING)],
+                               "aggregator": [verdict()]})
+        result = Team(model).run(files)  # PLAN names python, which is now off
+        self.assertIn("general", result.plan)
+        self.assertNotIn("python", result.plan)
+        models = {c["role"]: c["model"] for c in model.calls}
+        self.assertEqual(models["aggregator"], "gpt-6-luna-mini")
+        self.assertIsNone(models["coordinator"])
+
+    def test_update_is_all_or_nothing(self):
+        before = agents.snapshot()
+        with self.assertRaises(agents.ConfigError):
+            agents.update({"prompts": {"coordinator": "new text", "specialist": "no placeholder"}})
+        self.assertEqual(agents.snapshot(), before)
+        after = agents.update({"prompts": {"coordinator": "new text"}, "focus": {"go": "goroutines"},
+                               "config": {"agents": {"java": {"enabled": False}}}})
+        self.assertEqual(after["prompts"]["coordinator"], "new text\n")
+        self.assertEqual(after["focus"]["go"], "goroutines\n")
+        self.assertFalse(json.loads((self.prompts / "agents.json").read_text())["agents"]["java"]["enabled"])
+
+
+if __name__ == "__main__":
+    unittest.main()

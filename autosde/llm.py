@@ -87,9 +87,9 @@ class OpenAIModel:
     def __repr__(self):
         return f"OpenAIModel(model={self.model!r}, api_key=<redacted>)"
 
-    def complete(self, *, role, system, prompt, schema, max_output_tokens):
+    def complete(self, *, role, system, prompt, schema, max_output_tokens, model=None):
         body = {
-            "model": self.model,
+            "model": model or self.model,
             "instructions": system,
             "input": [
                 {"role": "user", "content": [{"type": "input_text", "text": prompt}]}
@@ -167,9 +167,9 @@ class ScriptedModel:
         self.script = {role: list(replies) for role, replies in script.items()}
         self.calls, self._lock = [], threading.Lock()
 
-    def complete(self, *, role, system, prompt, schema, max_output_tokens):
+    def complete(self, *, role, system, prompt, schema, max_output_tokens, model=None):
         with self._lock:
-            self.calls.append({"role": role, "system": system, "prompt": prompt})
+            self.calls.append({"role": role, "system": system, "prompt": prompt, "model": model})
             queue = self.script.get(role) or []
             reply = queue.pop(0) if queue else None
         if reply is None:

@@ -11,8 +11,9 @@ import secrets
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-from autosde import report
+from autosde import git, report
 from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, run_review
 
@@ -23,7 +24,7 @@ a{color:#2457c5;text-decoration:none}a:hover{text-decoration:underline}
 h1{font-size:22px;margin:0 0 16px}h2{font-size:16px;margin:28px 0 8px}
 .card{background:#fff;border:1px solid #e3e6eb;border-radius:8px;padding:16px;margin-bottom:16px}
 form{display:flex;gap:8px;flex-wrap:wrap}input{padding:8px;border:1px solid #c9ced6;border-radius:6px;font:inherit}
-input[name=repo]{flex:2 1 320px}input[name=range]{flex:1 1 160px}
+form{align-items:center}select{padding:7px;border:1px solid #c9ced6;border-radius:6px;font:inherit;max-width:420px}label{display:flex;gap:6px;align-items:center}
 button{padding:8px 16px;border:0;border-radius:6px;background:#2457c5;color:#fff;font:inherit;cursor:pointer}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eceef2;vertical-align:top}
 th{font-weight:600;color:#5b6474;font-size:13px}code{font:13px ui-monospace,Menlo,monospace}
@@ -68,24 +69,118 @@ REVIEW_COLUMNS = [
 ]
 
 
+def link(**query):
+    return "/?" + urllib.parse.urlencode(query)
+
+
 class App:
-    def __init__(self, store, settings, *, model_factory=None, port=8765):
+    def __init__(self, store, settings, *, model_factory=None, port=8765, browse_root=None):
         self.store, self.settings, self.port = store, settings, port
         self.token = secrets.token_urlsafe(24)
         self.model_factory = model_factory or (
             lambda: OpenAIModel(settings.model, reasoning_effort=settings.reasoning_effort)
         )
+        # The folder browser never leaves this root (your home folder by default).
+        self.browse_root = Path(browse_root or Path.home()).resolve()
 
-    def home(self, message=""):
-        form = (
-            '<div class="card"><form method="post" action="/reviews">'
+    def _inside(self, raw):
+        """Resolve a browse path; None when it is outside the browse root."""
+        try:
+            path = Path(raw).expanduser().resolve() if raw else self.browse_root
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if path != self.browse_root and self.browse_root not in path.parents:
+            return None
+        return path if path.is_dir() else None
+
+    def _choices(self, repo):
+        """(value, label) options for the from/to pickers, and the defaults."""
+        branches, commits = git.refs(repo)
+        options = [("HEAD", "HEAD")]
+        options += [(name, f"branch: {name}") for name in branches]
+        options += [(c.sha, f"{c.short}  {c.subject[:70]}  · {c.when}") for c in commits]
+        base = git.default_base(branches)
+        if base is not None and commits and git.resolve_ref(repo, base) == commits[0].sha:
+            base = None  # main is HEAD: main..HEAD would be empty
+        if base is None:  # default to the commit before HEAD
+            base = commits[1].sha if len(commits) > 1 else "HEAD"
+        return options, base, "HEAD"
+
+    def browser(self, path):
+        parent = (
+            f'<a href="{esc(link(browse=path.parent))}">⬑ {esc(path.parent)}</a>'
+            if path != self.browse_root
+            else '<span class="muted">Home</span>'
+        )
+        try:
+            folders = sorted(
+                (p for p in path.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                key=lambda p: p.name.lower(),
+            )[:500]
+        except PermissionError:
+            return (
+                f'<div class="card"><p>{parent}</p><p class="error">macOS blocked access to '
+                f"<code>{esc(path)}</code>. Allow it in System Settings → Privacy &amp; Security"
+                " → Files and Folders, then reload.</p></div>"
+            )
+        listing = "".join(
+            "<tr><td>"
+            + f'<a href="{esc(link(browse=p))}">📁 {esc(p.name)}</a></td><td>'
+            + (
+                f'<a href="{esc(link(repo=p))}"><b>Select</b></a> <span class="muted">git</span>'
+                if (p / ".git").exists()
+                else ""
+            )
+            + "</td></tr>"
+            for p in folders
+        ) or '<tr><td class="muted">No folders here.</td><td></td></tr>'
+        here = (
+            f' · <a href="{esc(link(repo=path))}"><b>Select this repository</b></a>'
+            if (path / ".git").exists()
+            else ""
+        )
+        return (
+            f'<div class="card"><p>{parent} · <code>{esc(path)}</code>{here}</p>'
+            f"<table><tr><th>Folder</th><th></th></tr>{listing}</table></div>"
+        )
+
+    def picker(self, repo, message=""):
+        options, base, head = self._choices(repo)
+
+        def select(name, default):
+            items = "".join(
+                f'<option value="{esc(value)}"{" selected" if value == default else ""}>{esc(label)}</option>'
+                for value, label in options
+            )
+            return f'<select name="{name}">{items}</select>'
+
+        return (
+            f'<div class="card"><p><b>{esc(repo.name)}</b> <code>{esc(repo)}</code> · '
+            f'<a href="{esc(link(browse=repo.parent))}">change repository</a></p>'
+            '<form method="post" action="/reviews">'
             f'<input type="hidden" name="token" value="{esc(self.token)}">'
-            '<input name="repo" placeholder="/path/to/repo" required>'
-            '<input name="range" placeholder="main..HEAD or a commit" required>'
+            f'<input type="hidden" name="repo" value="{esc(repo)}">'
+            f"<label>From {select('from', base)}</label>"
+            f"<label>To {select('to', head)}</label>"
             "<button>Review</button></form>"
-            f'<p class="muted">Model: {esc(self.settings.model)}. Code in the range is sent to the model after a gitleaks scan.</p>'
+            '<p class="muted">Reviews every commit after <i>From</i> up to and including <i>To</i>. '
+            f"Model: {esc(self.settings.model)}. Code is sent to the model after a gitleaks scan.</p>"
             f'{f"<p class=error>{esc(message)}</p>" if message else ""}</div>'
         )
+
+    def home(self, message="", *, browse=None, repo=None):
+        selected = self._inside(repo) if repo else None
+        if selected is not None:
+            try:
+                selected = git.repo_root(selected)
+            except git.GitError:
+                selected, message = None, message or "That folder is not a git repository."
+        if selected is not None and self._inside(str(selected)) is not None:
+            chooser = self.picker(selected, message)
+        else:
+            path = self._inside(browse) or self.browse_root
+            note = f'<p class="error">{esc(message)}</p>' if message else ""
+            chooser = note + self.browser(path)
         projects = rows(self.store.projects(), [
             ("Project", lambda p: f'<a href="/projects/{p["id"]}">{esc(p["name"])}</a>'),
             ("Reviews", lambda p: esc(p["reviews"])),
@@ -93,7 +188,7 @@ class App:
             ("Path", lambda p: f'<code>{esc(p["path"])}</code>'),
         ])
         recent = rows(self.store.reviews(limit=20), REVIEW_COLUMNS)
-        return page("AutoSDE", f"<h1>Review a commit range</h1>{form}<h2>Projects</h2>"
+        return page("AutoSDE", f"<h1>Review a commit range</h1>{chooser}<h2>Projects</h2>"
                                f'<div class="card">{projects}</div><h2>Recent reviews</h2><div class="card">{recent}</div>')
 
     def project(self, project_id):
@@ -150,9 +245,21 @@ class App:
         """Start a review in the background; return its id or an error message."""
         if not secrets.compare_digest(form.get("token", ""), self.token):
             return None, "This form has expired; reload the page."
-        repo, range_spec = form.get("repo", "").strip(), form.get("range", "").strip()
-        if not repo or not range_spec:
-            return None, "Enter a repository path and a commit range."
+        repo = self._inside(form.get("repo", "").strip())
+        if repo is None:
+            return None, "Choose a repository inside your home folder."
+        try:
+            options, _, _ = self._choices(git.repo_root(repo))
+        except git.GitError:
+            return None, "That folder is not a git repository."
+        # Only refs the page offered are accepted, never free text.
+        offered = {value for value, _ in options}
+        start, end = form.get("from", ""), form.get("to", "")
+        if start not in offered or end not in offered:
+            return None, "Pick From and To from the lists."
+        if start == end:
+            return None, "From and To are the same; pick an older From."
+        range_spec = f"{start}..{end}"
         try:
             model = self.model_factory()
         except RuntimeError as error:
@@ -209,7 +316,9 @@ def handler_for(app):
             if not self._same_origin():
                 return self._send(403, "Forbidden", "text/plain")
             if path == "/":
-                return self._send(200, app.home())
+                query = urllib.parse.parse_qs(self.path.partition("?")[2])
+                return self._send(200, app.home(browse=(query.get("browse") or [None])[0],
+                                                repo=(query.get("repo") or [None])[0]))
             if match := re.fullmatch(r"/reviews/(\d+)\.sarif", path):
                 review = app.store.review(int(match[1]))
                 if review:
@@ -232,7 +341,8 @@ def handler_for(app):
             form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(length).decode()).items()}
             review_id, message = app.submit(form)
             if review_id is None:
-                return self._send(400, app.home(message or "Review could not start."))
+                return self._send(400, app.home(message or "Review could not start.",
+                                                repo=form.get("repo")))
             self.send_response(303)
             self.send_header("Location", f"/reviews/{review_id}")
             self.send_header("Content-Length", "0")

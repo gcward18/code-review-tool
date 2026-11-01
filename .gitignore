@@ -1,6 +1,20 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# IDEs and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Python
 __pycache__/
+*.py[cod]
 *.egg-info/
 .venv/
+
+# Local data and outputs
 *.db
 *.sarif
 .ipynb_checkpoints/

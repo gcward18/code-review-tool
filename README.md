@@ -26,6 +26,8 @@ autosde agents calculator                       # which agents ran against the p
 autosde serve                                   # http://127.0.0.1:8765/ to submit and browse
 ```
 
+On the web page, browse your home folder, **Select** a git repository, then pick **From** and **To** from dropdowns of branches and recent commits. The defaults are `main` (or `master`) → `HEAD`; when `main` *is* `HEAD`, From defaults to the previous commit. The review covers every commit after From up to and including To.
+
 Only committed history is reviewed; uncommitted edits are ignored.
 
 ## Configuration

@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
 from autosde import report
@@ -30,6 +31,12 @@ class Seeded(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    @property
+    def base(self):
+        from helpers import git
+
+        return git(self.repo, "rev-parse", "HEAD~1")
 
     def scripted(self, finding=FINDING):
         return ScriptedModel({"coordinator": [PLAN], "python": [findings(finding)],
@@ -78,10 +85,12 @@ class CliTests(Seeded):
 
 class WebTests(Seeded):
     def start(self):
-        app = App(self.store, self.settings, model_factory=self.scripted, port=0)
+        app = App(self.store, self.settings, model_factory=self.scripted, port=0,
+                  browse_root=self.tmp.name)
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(app))
         app.port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return app, f"http://127.0.0.1:{app.port}"
 
@@ -97,7 +106,8 @@ class WebTests(Seeded):
         with patch("autosde.review.scanner", return_value=clean_scan):
             app.model_factory = lambda: self.scripted(XSS)
             response = self.post(url, {"token": app.token, "repo": str(self.repo),
-                                       "range": "HEAD~1..HEAD"}, origin=url)
+                                       "from": self.base, "to": "HEAD"},
+                                 origin=url)
         self.assertRegex(response.url, r"/reviews/\d+$")
         for _ in range(50):
             page = urllib.request.urlopen(response.url, timeout=5).read().decode()
@@ -115,7 +125,7 @@ class WebTests(Seeded):
 
     def test_submission_needs_the_token_and_same_origin(self):
         app, url = self.start()
-        good = {"token": app.token, "repo": str(self.repo), "range": "HEAD~1..HEAD"}
+        good = {"token": app.token, "repo": str(self.repo), "from": self.base, "to": "HEAD"}
         with self.assertRaises(urllib.error.HTTPError) as bad_token:
             self.post(url, good | {"token": "wrong"}, origin=url)
         self.assertEqual(bad_token.exception.code, 400)
@@ -131,6 +141,70 @@ class ReportTests(Seeded):
         self.assertIn("Fix: Use total += item", report.text(review))
         location = report.sarif(review)["runs"][0]["results"][0]["locations"][0]
         self.assertEqual(location["physicalLocation"]["artifactLocation"]["uri"], "calculator.py")
+
+
+class BrowserTests(Seeded):
+    def app(self):
+        return App(self.store, self.settings, model_factory=self.scripted, port=0,
+                   browse_root=self.tmp.name)
+
+    def test_browser_lists_folders_marks_repositories_and_stays_inside_root(self):
+        app = self.app()
+        (Path(self.tmp.name) / "plain").mkdir()
+        home = app.home()
+        self.assertIn("calculator", home)
+        self.assertIn("Select", home)
+        self.assertIn(urllib.parse.quote(str(self.repo), safe=""), home)
+        outside = app.home(browse="/")
+        self.assertIn(str(Path(self.tmp.name).resolve()), outside)  # fell back to the root
+        self.assertIsNone(app._inside("/etc"))
+        self.assertIsNone(app._inside(str(Path(self.tmp.name) / "..")))
+
+    def test_picker_defaults_to_main_and_head_and_lists_commits(self):
+        from helpers import git
+
+        git(self.repo, "checkout", "-qb", "feature")
+        (self.repo / "extra.py").write_text("x = 1\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "feature work")
+        page = self.app().home(repo=str(self.repo))
+        self.assertRegex(page, r'<select name="from">.*<option value="main" selected>branch: main</option>')
+        self.assertRegex(page, r'<select name="to"><option value="HEAD" selected>HEAD</option>')
+        self.assertIn("feature work", page)
+        self.assertIn("branch: feature", page)
+
+    def test_picker_without_main_defaults_from_to_the_previous_commit(self):
+        from helpers import git
+
+        git(self.repo, "branch", "-m", "main", "trunk")
+        app = self.app()
+        options, base, head = app._choices(self.repo)
+        self.assertEqual((base, head), (git(self.repo, "rev-parse", "HEAD~1"), "HEAD"))
+
+    def test_main_at_head_defaults_from_to_the_previous_commit(self):
+        from helpers import git
+
+        options, base, head = self.app()._choices(self.repo)  # repo is on main; main == HEAD
+        self.assertEqual((base, head), (git(self.repo, "rev-parse", "HEAD~1"), "HEAD"))
+        self.assertIn(("main", "branch: main"), options)
+
+    def test_submit_accepts_only_offered_refs(self):
+        app = self.app()
+        with patch("autosde.review.scanner", return_value=clean_scan):
+            review_id, message = app.submit({"token": app.token, "repo": str(self.repo),
+                                             "from": self.base, "to": "HEAD"})
+        self.assertIsNotNone(review_id, message)
+        for bad in ({"from": "--output=/tmp/x", "to": "HEAD"}, {"from": "HEAD", "to": "HEAD"},
+                    {"from": self.base, "to": "HEAD", "repo": "/etc"}):
+            form = {"token": app.token, "repo": str(self.repo)} | bad
+            self.assertEqual(app.submit(form)[0], None, bad)
+
+    def test_git_refuses_option_like_refs(self):
+        from autosde import git as capture_git
+
+        for spec in ("--output=x..HEAD", "HEAD..--x", "-x"):
+            with self.assertRaises(capture_git.GitError):
+                capture_git.resolve_range(self.repo, spec)
 
 
 if __name__ == "__main__":

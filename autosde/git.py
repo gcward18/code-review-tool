@@ -63,12 +63,52 @@ def resolve_range(repo, spec):
         head = head or "HEAD"
     else:
         base, head = f"{spec}~1", spec
+    if not base or base.startswith("-") or head.startswith("-"):
+        # A leading dash would be read by git as an option.
+        raise GitError(f"Unknown commit range: {spec}")
     try:
         base_sha = _git(repo, "rev-parse", "--verify", f"{base}^{{commit}}")
         head_sha = _git(repo, "rev-parse", "--verify", f"{head}^{{commit}}")
     except GitError:
         raise GitError(f"Unknown commit range: {spec}") from None
     return base_sha.decode().strip(), head_sha.decode().strip()
+
+
+@dataclass
+class Commit:
+    sha: str
+    short: str
+    subject: str
+    when: str
+
+
+def refs(repo, *, limit=50):
+    """Local branches and the most recent commits on HEAD, for range pickers."""
+    branches = [
+        line
+        for line in _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+        .decode("utf-8", "replace")
+        .splitlines()
+        if line
+    ]
+    log = _git(
+        repo, "log", f"-n{limit}", "--format=%H%x1f%h%x1f%s%x1f%cr", "HEAD", check=False
+    ).decode("utf-8", "replace")
+    commits = [Commit(*line.split("\x1f", 3)) for line in log.splitlines() if line.count("\x1f") == 3]
+    return branches, commits
+
+
+def resolve_ref(repo, ref):
+    """Commit SHA for a branch or ref, or None."""
+    if ref.startswith("-"):
+        return None
+    out = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+    return out.decode().strip() or None
+
+
+def default_base(branches):
+    """`main`, else `master`, else None (the caller falls back to an older commit)."""
+    return next((name for name in ("main", "master") if name in branches), None)
 
 
 def capture(path, spec, *, max_file_bytes=64_000, max_total_bytes=400_000):

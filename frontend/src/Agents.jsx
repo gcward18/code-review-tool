@@ -16,6 +16,7 @@ export default function Agents({ defaultModel }) {
   const [draft, setDraft] = useState(null);
   const [status, setStatus] = useState({ kind: "", text: "" });
   const [newName, setNewName] = useState("");
+  const [selected, setSelected] = useState("python");
 
   useEffect(() => {
     api.agents().then((data) => (setSaved(data), setDraft(clone(data))))
@@ -28,6 +29,7 @@ export default function Agents({ defaultModel }) {
   const edit = (fn) => setDraft((d) => { const next = clone(d); fn(next); return next; });
   const agent = (name, key, value) => edit((d) => { d.config.agents[name][key] = value; });
   const specialists = Object.keys(draft.config.agents).filter((n) => !CORE.includes(n));
+  const current = draft.config.agents[selected] ? selected : "general";
 
   const save = async () => {
     setStatus({ kind: "muted", text: "Saving…" });
@@ -52,6 +54,7 @@ export default function Agents({ defaultModel }) {
       d.focus[name] = "";
     });
     setNewName("");
+    setSelected(name);
   };
 
   const modelField = (name) => (
@@ -76,54 +79,64 @@ export default function Agents({ defaultModel }) {
       </div>
 
       <div className="card">
-        <h3>Team</h3>
-        <div className="agent-grid">
-          {CORE.map((name) => (
-            <div key={name} className="agent">
-              <strong>{name}</strong>
-              {modelField(name)}
-            </div>
-          ))}
+        <div className="actions picker">
+          <label className="field grow">
+            <span className="small muted">Agent</span>
+            <select value={current} onChange={(e) => setSelected(e.target.value)}>
+              <optgroup label="Team">
+                {CORE.map((name) => <option key={name} value={name}>{name}</option>)}
+              </optgroup>
+              <optgroup label="Specialists">
+                {specialists.map((name) => (
+                  <option key={name} value={name}>
+                    {name}{draft.config.agents[name].enabled ? "" : " (off)"}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
+          <form className="actions add" onSubmit={add}>
+            <input value={newName} placeholder="new specialist, e.g. rust" onChange={(e) => setNewName(e.target.value)} />
+            <button className="secondary" type="submit">Add</button>
+          </form>
         </div>
-      </div>
-
-      <div className="card">
-        <h3>Specialists</h3>
-        <p className="small muted">Files go to the specialist whose extension matches; everything else goes to general.</p>
-        <div className="agent-grid">
-          {specialists.map((name) => {
-            const item = draft.config.agents[name];
-            return (
-              <div key={name} className={`agent ${item.enabled ? "" : "off"}`}>
+        {(() => {
+          const name = current;
+          const item = draft.config.agents[name];
+          const core = CORE.includes(name);
+          return (
+            <div className={`agent ${item.enabled ? "" : "off"}`}>
+              {core ? (
+                <strong>{name}</strong>
+              ) : (
                 <label className="toggle">
                   <input type="checkbox" checked={item.enabled} disabled={FIXED.includes(name)}
                     onChange={(e) => agent(name, "enabled", e.target.checked)} />
                   <strong>{name}</strong>
-                  {name === "general" && <span className="badge">catch-all</span>}
+                  {name === "general" && <span className="badge">catch-all, always on</span>}
                 </label>
-                {name !== "general" && (
-                  <label className="field">
-                    <span className="small muted">Extensions</span>
-                    <input value={item.extensions.join(", ")} placeholder=".rs, .toml"
-                      onChange={(e) => agent(name, "extensions",
-                        e.target.value.split(/[\s,]+/).filter(Boolean))} />
-                  </label>
-                )}
-                {modelField(name)}
+              )}
+              {!core && name !== "general" && (
+                <label className="field">
+                  <span className="small muted">Extensions</span>
+                  <input value={item.extensions.join(", ")} placeholder=".rs, .toml"
+                    onChange={(e) => agent(name, "extensions",
+                      e.target.value.split(/[\s,]+/).filter(Boolean))} />
+                </label>
+              )}
+              {modelField(name)}
+              {!core && (
                 <label className="field">
                   <span className="small muted">Focus</span>
-                  <textarea rows={4} value={draft.focus[name] || ""}
+                  <textarea rows={6} value={draft.focus[name] || ""}
                     placeholder="What this specialist should look for."
                     onChange={(e) => edit((d) => { d.focus[name] = e.target.value; })} />
                 </label>
-              </div>
-            );
-          })}
-        </div>
-        <form className="actions add" onSubmit={add}>
-          <input value={newName} placeholder="new specialist, e.g. rust" onChange={(e) => setNewName(e.target.value)} />
-          <button className="secondary" type="submit">Add specialist</button>
-        </form>
+              )}
+              {core && <p className="small muted">Edit its prompt under System prompts below.</p>}
+            </div>
+          );
+        })()}
       </div>
 
       <div className="card">

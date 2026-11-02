@@ -6,15 +6,6 @@ const ACCEPT = ".txt,.md,.markdown,.rst,.adoc,.json,.csv,.tsv,.yaml,.yml,.toml,.
   + ".docx,.pdf,.log,.sql,.py,.js,.jsx,.ts,.tsx,.java,.go,.cs,.rb,.rs,.c,.h,.cpp,.hpp,.kt,.swift,.php,.sh,.tf,.proto,.graphql";
 const size = (n) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n > 1e3 ? `${Math.round(n / 1e3)} KB` : `${n} B`);
 
-function toBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
-    reader.onerror = () => reject(new Error("Could not read the file."));
-    reader.readAsDataURL(file);
-  });
-}
-
 function NewBase({ onCreated, onCancel }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -191,8 +182,6 @@ function Strategy({ base, options, onSaved, onDeleted }) {
   );
 }
 
-const textToBase64 = (text) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
-
 function PasteText({ onAdd, onCancel }) {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
@@ -364,13 +353,13 @@ function Documents({ base, onChanged }) {
   const upload = async (files) => {
     setErrors([]);
     for (const file of files) {
-      if (file.size > 20e6) setErrors((list) => [...list, `${file.name}: over 20 MB.`]);
-      else await send(file.name, await toBase64(file));
+      if (file.size > api.maxDocumentBytes()) setErrors((list) => [...list, `${file.name}: over ${api.maxDocumentBytes() / 1e6} MB.`]);
+      else await send(file.name, file);
     }
   };
   const addText = async (name, text) => {
     setErrors([]);
-    if (await send(name, textToBase64(text))) setPasting(false);
+    if (await send(name, new Blob([text], { type: "text/plain" }))) setPasting(false);
   };
   const remove = async (ids) => {
     const names = docs.filter((d) => ids.includes(d.id)).map((d) => d.name);
@@ -420,7 +409,7 @@ function Documents({ base, onChanged }) {
         <div className="dropzone" onClick={() => input.current.click()}>
           <div className="empty-icon">📄</div>
           <b>Drop documents here, or click to choose files</b>
-          <span className="small muted">PDF, Markdown, text, code, HTML, JSON, CSV or .docx · up to 20 MB each · scanned by gitleaks before embedding</span>
+          <span className="small muted">PDF, Markdown, text, code, HTML, JSON, CSV or .docx · up to {api.maxDocumentBytes() / 1e6} MB each · scanned by gitleaks before embedding</span>
         </div>
       ) : docs.length > 0 && (
         <table className="kb-docs">

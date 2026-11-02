@@ -1,0 +1,32 @@
+{
+  "name": "autosde-local-infrastructure",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "cdk": "node --import tsx scripts/cdk.ts",
+    "lint": "eslint .",
+    "format": "prettier --write '**/*.ts' '*.json' '*.mjs'",
+    "format:check": "prettier --check '**/*.ts' '*.json' '*.mjs'"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.274.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.5",
+    "aws-cdk": "2.1146.1",
+    "eslint": "10.0.3",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  },
+  "overrides": {
+    "minimatch": "11.0.1",
+    "esbuild": "0.28.1"
+  }
+}

@@ -37,10 +37,14 @@ class Secrets:
         return self._cache[secret_id]
 
     def available(self, secret_id):
+        return bool(self.optional(secret_id))
+
+    def optional(self, secret_id):
+        """The secret's value, or None when it is missing, empty or unreadable."""
         try:
-            return bool(self.get(secret_id))
+            return self.get(secret_id) or None
         except RuntimeError:
-            return False
+            return None
 
 
 def load_parameters(ssm, prefix):
@@ -108,4 +112,7 @@ class Cloud:
     def github_client(self):
         from autosde.github import Client
 
-        return Client(token=lambda: self.secrets.get(self.settings.github_secret_id))
+        # Without a token value GitHub is read anonymously: public repositories still work.
+        return Client(token=lambda: self.secrets.optional(self.settings.github_secret_id),
+                      private_hint=f"add a read-only GitHub token to the {self.settings.github_secret_id} "
+                                   "secret in Secrets Manager")

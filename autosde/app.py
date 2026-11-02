@@ -435,6 +435,8 @@ class App:
                 return {"ok": True}
         except RemoteError as error:
             raise ApiError(400, str(error)) from None
+        except RuntimeError:  # e.g. a secret that can't be read; never echo its details
+            raise ApiError(503, "GitHub access isn't set up correctly on the server.") from None
         raise ApiError(404, "Not found.")
 
     def _review_commit(self, repo):
@@ -486,7 +488,7 @@ class App:
             raise ApiError(400, str(error)) from None
         raise ApiError(404, "Not found.")
 
-    def knowledge(self, method, parts, body):
+    def knowledge(self, method, parts, body, *, user=None):
         kb = self._knowledge()
         try:
             if method == "GET" and not parts:
@@ -542,6 +544,16 @@ class App:
                     if docs:
                         self.jobs.submit("reindex", doc_ids=[d["id"] for d in docs])
                     return {"rechunking": len(docs), "skipped": skipped}
+                if method == "POST" and (rest == ["uploads"] or
+                        len(rest) == 3 and rest[0] == "uploads" and rest[2] == "complete"):
+                    if not self.cloud or self.uploads is None:
+                        raise ApiError(404, "Not found.")
+                    owner = (user or {}).get("sub")
+                    if not isinstance(owner, str) or not owner:
+                        raise ApiError(401, "Sign in first.")
+                    if rest == ["uploads"]:
+                        return self.uploads.initiate(kb, kb_id, owner, body.get("name"), body.get("size"), body.get("sha256"))
+                    return self.uploads.complete(kb, kb_id, owner, rest[1], self.jobs)
                 if method == "POST" and rest == ["documents"]:
                     try:
                         data = base64.b64decode(body.get("data") or "", validate=True)
@@ -580,7 +592,9 @@ class App:
                 self.jobs.submit("batch_step", batch_id=args["batch_id"])  # one commit per run
         elif name == "ingest":
             kb = self._knowledge()
-            if "upload" in args:
+            if "upload_ticket" in args:
+                self.uploads.ingest(kb, args["upload_ticket"])
+            elif "upload" in args:
                 data = self.uploads.get(args["upload"])
                 try:
                     kb.ingest(args["doc_id"], data)

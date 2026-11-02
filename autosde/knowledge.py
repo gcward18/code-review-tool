@@ -47,6 +47,17 @@ class KnowledgeError(ValueError):
     pass
 
 
+def document_metadata(name, size, digest):
+    """Validate upload metadata shared by inline and direct uploads."""
+    if type(size) is not int or not 0 <= size <= MAX_BYTES:
+        raise KnowledgeError("Files must be under 20 MB.")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise KnowledgeError("Upload checksum must be SHA-256.")
+    if name is not None and not isinstance(name, str):
+        raise KnowledgeError("Document name must be text.")
+    return re.sub(r"[^\w .()\-]", "_", (name or "document").strip())[:120] or "document"
+
+
 def tokens(text):
     """Cheap token estimate (about four characters per token for English and code)."""
     return max(1, math.ceil(len(text) / 4))
@@ -545,9 +556,9 @@ class Knowledge:
         """Record the upload; `ingest` does the work (call it on a background thread)."""
         self.base(kb_id)
         digest = hashlib.sha256(data).hexdigest()
+        name = document_metadata(name, len(data), digest)
         if self.store.has_document(kb_id, digest):
             raise KnowledgeError("That document is already in this knowledge base.")
-        name = re.sub(r"[^\w .()\-]", "_", (name or "document").strip())[:120] or "document"
         return self.store.insert_document(kb_id, name, len(data), digest, self.clock())
 
     def ingest(self, doc_id, data):

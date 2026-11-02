@@ -2,6 +2,8 @@
 
 Target: account `123456789012`, region `us-east-1`, profile `your-profile`, stage `dev` (from the Code Review Service `.env`). The local app keeps working; the same code runs in AWS with different storage and configuration backends.
 
+Infrastructure implementation and commands: [Deployment and review](DEPLOYMENT.md). Frontend runtime settings: [Frontend configuration](FRONTEND.md).
+
 ## Architecture
 
 ```
@@ -26,7 +28,7 @@ API Gateway HTTP API ──(Cognito JWT authorizer)──► api Lambda  (≤28 
 | Built UI served by Python | S3 bucket (private) behind CloudFront with origin access control |
 | No login (localhost + token) | Cognito user pool, invite-only, hosted login page, optional TOTP MFA; every API route needs a valid token |
 | Knowledge chunks + FTS5 in SQLite | Chunks and vectors in DynamoDB; hybrid search (vectors + BM25) inside Lambda, cached per warm container |
-| Uploaded files read in memory | Browser uploads to S3 with a presigned URL; worker extracts, scans, chunks, embeds; extracted text kept in S3 |
+| Uploaded files read in memory | Browser uploads directly to private S3 using a short-lived signed POST (20 MB per file); the worker verifies the pinned version, scans and processes it, then deletes its temporary copy |
 | `prompts/agents.json`, prompt files | DynamoDB config items with versions (edited from the Agents page) |
 | Environment variables | SSM Parameter Store `/autosde/dev/*` (model, prices, reasoning effort, LangSmith project/endpoint/enabled) |
 | OpenAI key via env or Secrets Manager | Secrets Manager `autosde/openai-api-key` (exists) |
@@ -60,6 +62,10 @@ About $2/month: three secrets ($1.20), and pennies for DynamoDB on-demand, Lambd
 - Knowledge search loads a base's vectors into Lambda memory: fine up to roughly 20,000 chunks per base.
 - API calls stop at 28 seconds; chat answers that take longer return a "still working" response and finish in the background.
 - The account's 10 concurrent Lambdas cap parallel work (batches run one commit at a time).
+
+## Implementation status
+
+Steps 1–4 are implemented locally: storage/configuration backends; shared API, jobs and Lambda handlers; frontend runtime config/login; and the CDK app with verified assets, tests, synth and a read-only AWS diff. The diff proposes a new `AutoSDELocal-dev` stack with 41 resources. The first deployment was subsequently authorized; its progress is tracked in [Deployment status](DEPLOYMENT-STATUS.md). Direct-upload support is implemented in the working tree separately from the initial deployment snapshot. No data migration or user invitations have been performed.
 
 ## Order of work
 

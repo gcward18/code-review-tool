@@ -1,0 +1,8 @@
+{
+  "ModelId": "gpt-4o",
+  "InputPrice": "2.50",
+  "OutputPrice": "10.00",
+  "OpenAISecretArn": "COMPLETE_EXISTING_OPENAI_SECRET_ARN",
+  "GitHubSecretArn": "COMPLETE_EXISTING_GITHUB_SECRET_ARN",
+  "LangSmithSecretArn": "COMPLETE_EXISTING_LANGSMITH_SECRET_ARN"
+}

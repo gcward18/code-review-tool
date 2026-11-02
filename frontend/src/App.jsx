@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import useRoute from "./useRoute.js";
 import { routeHref } from "./routes.js";
-import { api } from "./api.js";
+import { api, downloadSarif } from "./api.js";
 import Agents from "./Agents.jsx";
 import Knowledge from "./Knowledge.jsx";
 import BatchPanel from "./Batch.jsx";
@@ -76,7 +76,7 @@ function ProjectList({ title, items, selected, onSelect, blocked }) {
   );
 }
 
-function AddGitHub({ onAdded, onCancel }) {
+function AddGitHub({ onAdded, onCancel, cloud }) {
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,7 +98,9 @@ function AddGitHub({ onAdded, onCancel }) {
         <span className="small">GitHub repository</span>
         <input autoFocus value={text} placeholder="owner/name or https://github.com/owner/name" onChange={(e) => setText(e.target.value)} />
       </label>
-      <span className="small muted">Read straight from GitHub; nothing is cloned. Private repositories work when the `gh` CLI is logged in.</span>
+      <span className="small muted">{cloud
+        ? "Read straight from GitHub. Public repositories work right away; private ones need a read-only GitHub token in the server's autosde/github-token secret."
+        : "Read straight from GitHub; nothing is cloned. Private repositories work when the `gh` CLI is logged in."}</span>
       {error && <p className="error small">{error}</p>}
       <div className="actions">
         <button type="submit" disabled={busy || !text.trim()}>{busy ? "Checking…" : "Add"}</button>
@@ -137,7 +139,7 @@ function GitHubList({ items, selected, onSelect, onChanged }) {
   );
 }
 
-function Workspaces({ selected, onSelect, showBlocked, refresh }) {
+function Workspaces({ selected, onSelect, showBlocked, refresh, cloud }) {
   const [query, setQuery] = useState("");
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -160,7 +162,7 @@ function Workspaces({ selected, onSelect, showBlocked, refresh }) {
       {error && <p className="error small">{error}</p>}
       {!data && !error && <p className="muted small">Finding repositories…</p>}
       {adding ? (
-        <AddGitHub onAdded={() => (setAdding(false), setTick((t) => t + 1))} onCancel={() => setAdding(false)} />
+        <AddGitHub cloud={cloud} onAdded={() => (setAdding(false), setTick((t) => t + 1))} onCancel={() => setAdding(false)} />
       ) : (
         <button className="secondary add-gh-btn" onClick={() => setAdding(true)}>+ Add GitHub repository</button>
       )}
@@ -472,7 +474,7 @@ function Review({ id, onProject, onContext, showAgents }) {
           <span className={`badge status-${review.status}`}>{review.status.replace("_", " ")}</span>{" "}
           <code>{review.base_sha.slice(0, 7)}..{review.head_sha.slice(0, 7)}</code> · {review.model} ·{" "}
           {review.files_changed} files · {review.input_tokens}/{review.output_tokens} tokens ·{" "}
-          {money(review.cost_usd)} · <a href={`/api/reviews/${review.id}.sarif`}>SARIF</a>
+          {money(review.cost_usd)} · <button className="secondary" onClick={() => downloadSarif(review.id).catch((e) => setError(e.message))}>SARIF</button>
         </p>
         {review.summary && <Markdown text={review.summary} />}
         {review.error && <p className="error">{review.error}</p>}
@@ -742,7 +744,7 @@ function Crumbs({ view, canGoBack, onBack, go }) {
 
 // --- shell ----------------------------------------------------------------------
 
-export default function App() {
+export default function App({ onSignOut }) {
   const [theme, setTheme] = useTheme();
   const [prefs, setPrefs] = usePrefs();
   const [scan, setScan] = useState(0);
@@ -771,12 +773,16 @@ export default function App() {
         <a className="brand" href={routeHref({ kind: "home" })}><span className="brand-mark">A</span>AutoSDE</a>
         <Crumbs view={view} canGoBack={window.history.length > 1} onBack={back} go={go} />
         <span className="grow" />
+        {onSignOut && <>
+          {session?.user?.email && <span className="small muted">{session.user.email}</span>}
+          <button className="secondary" onClick={onSignOut}>Sign out</button>
+        </>}
         <a href={routeHref({ kind: "agents" })} className={view.kind === "agents" ? "active" : ""}>Agents</a>
         <a href={routeHref({ kind: "knowledge" })} className={view.kind === "knowledge" ? "active" : ""}>Knowledge</a>
         <a href={routeHref({ kind: "settings" })} className={view.kind === "settings" ? "active" : ""}>Settings</a>
       </header>
       <aside className={drawer ? "open" : ""}>
-        {session && <Workspaces selected={view.repo} showBlocked={prefs.showBlocked} refresh={scan}
+        {session && <Workspaces selected={view.repo} showBlocked={prefs.showBlocked} refresh={scan} cloud={session.cloud}
           onSelect={(repo) => go({ kind: "repo", repo })} />}
       </aside>
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
@@ -787,12 +793,12 @@ export default function App() {
           <Home onOpen={(id) => go({ kind: "review", id })} onProject={(id) => go({ kind: "project", id })}
             showAgents={prefs.showAgents} />
         )}
-        {view.kind === "repo" && (
+        {session && view.kind === "repo" && (
           <RangePicker key={view.repo} repoPath={view.repo}
             onStarted={(id) => go({ kind: "review", id, repo: view.repo })}
             onOpen={(id) => go({ kind: "review", id, repo: view.repo })} showAgents={prefs.showAgents} />
         )}
-        {view.kind === "review" && (
+        {session && view.kind === "review" && (
           <Review key={view.id} id={view.id} onContext={context} showAgents={prefs.showAgents} onProject={(id) => go({ kind: "project", id, repo: view.repo })} />
         )}
         {session && view.kind === "knowledge" && <Knowledge selected={view.base} onSelect={(base, options) => go({ kind: "knowledge", base }, options)} />}
@@ -801,7 +807,7 @@ export default function App() {
             onRescan={() => setScan((n) => n + 1)} />
         )}
         {session && view.kind === "agents" && <Agents defaultModel={session.model} selected={view.agent} onSelect={(agent) => go({ kind: "agents", agent })} />}
-        {view.kind === "project" && <ProjectRedirect key={view.id} id={view.id} go={go} />}
+        {session && view.kind === "project" && <ProjectRedirect key={view.id} id={view.id} go={go} />}
       </main>
     </div>
   );

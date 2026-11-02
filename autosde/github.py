@@ -63,9 +63,10 @@ def _check_ref(ref):
 class Client:
     """GET requests against the GitHub API: via `gh api` when available, else anonymous HTTPS."""
 
-    def __init__(self, *, gh=None, opener=None, token=None):
-        # token: a callable returning a GitHub token (AWS: Secrets Manager); it replaces `gh`.
+    def __init__(self, *, gh=None, opener=None, token=None, private_hint=None):
+        # token: a callable returning a GitHub token or None (AWS: Secrets Manager); it replaces `gh`.
         self.token = token
+        self.private_hint = private_hint or "log in with `gh auth login`"
         self.gh = None if token else (shutil.which("gh") if gh is None else gh)
         self._authed = None
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -91,19 +92,20 @@ class Client:
             body = result.stdout
         else:
             headers = {"Accept": accept, "User-Agent": "autosde", "X-GitHub-Api-Version": "2022-11-28"}
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token()}"
+            value = self.token() if self.token else None
+            if value:
+                headers["Authorization"] = f"Bearer {value}"
             request = urllib.request.Request(f"{API}/{path}", headers=headers)
             try:
                 with self.opener.open(request, timeout=60) as response:
                     body = response.read(20_000_000)
             except urllib.error.HTTPError as error:
                 if error.code == 404:
-                    raise GitHubError("GitHub says that doesn't exist, or it's private: log in with "
-                                      "`gh auth login` to review private repositories.") from None
+                    raise GitHubError("GitHub says that doesn't exist, or it's private: "
+                                      f"{self.private_hint} to review private repositories.") from None
                 if error.code in (403, 429):
-                    raise GitHubError("GitHub's anonymous rate limit was reached; log in with "
-                                      "`gh auth login` for higher limits.") from None
+                    raise GitHubError("GitHub's anonymous rate limit was reached; "
+                                      f"{self.private_hint} for higher limits.") from None
                 raise GitHubError(f"GitHub request failed (HTTP {error.code}).") from None
             except Exception as error:
                 raise GitHubError(f"GitHub request failed ({type(error).__name__}).") from None

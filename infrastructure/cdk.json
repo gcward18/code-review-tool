@@ -1,0 +1,10 @@
+{
+  "app": "node --import tsx bin/app.ts",
+  "versionReporting": false,
+  "context": {
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-lambda:useCdkManagedLogGroup": false,
+    "@aws-cdk/aws-s3:keepNotificationInImportedBucket": false,
+    "@aws-cdk/core:validateAgainstDefaultRules": true
+  }
+}

@@ -22,7 +22,7 @@ build-backend = "setuptools.build_meta"
 include = ["autosde*"]
 
 [tool.setuptools.package-data]
-autosde = ["prompts/*.md", "prompts/focus/*.md", "static/*.html", "static/assets/*"]
+autosde = ["prompts/*.md", "prompts/focus/*.md", "static/*.html", "static/*.json", "static/assets/*"]
 
 [tool.ruff]
 line-length = 100

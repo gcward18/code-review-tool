@@ -12,46 +12,35 @@ Environment (set by the CDK stack; none of these are secrets):
 import base64
 import json
 import os
-import uuid
 
 from autosde.api import body_limit, dispatch, json_response
+from autosde.uploads import S3Uploads
 
 _APP = None
+# JSON uploads carry base64; leave room under the 6 MB Lambda invocation envelope.
+CLOUD_UPLOAD_LIMIT = 4_100_000
+
 HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
-
-
-class S3Uploads:
-    """Uploaded documents in transit from the api function to the worker (deleted after ingest)."""
-
-    def __init__(self, s3, bucket):
-        self.s3, self.bucket = s3, bucket
-
-    def put(self, doc_id, data):
-        key = f"uploads/{doc_id}-{uuid.uuid4().hex}"
-        self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ServerSideEncryption="AES256")
-        return key
-
-    def get(self, key):
-        return self.s3.get_object(Bucket=self.bucket, Key=key)["Body"].read()
-
-    def delete(self, key):
-        self.s3.delete_object(Bucket=self.bucket, Key=key)
 
 
 def build_app():
     import boto3
+    from botocore.config import Config
 
     from autosde.app import App
     from autosde.cloud import Cloud
     from autosde.jobs import LambdaJobs
 
-    s3, bucket = boto3.client("s3"), os.environ["BUCKET_NAME"]
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    s3 = boto3.client("s3", region_name=region, endpoint_url=f"https://s3.{region}.amazonaws.com",
+                      config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
+    bucket = os.environ["BUCKET_NAME"]
     cloud = Cloud(table=boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"]), ssm=boto3.client("ssm"),
                   secretsmanager=boto3.client("secretsmanager"), prefix=os.environ["SSM_PREFIX"],
                   s3=s3, bucket=bucket, gitleaks=os.environ.get("GITLEAKS_PATH"))
     return App(cloud.store, cloud.settings, model_factory=cloud.model, github_client=cloud.github_client(),
                knowledge_store=cloud.knowledge_store, remote_store=cloud.remote_store,
-               batch_store=cloud.batch_store, uploads=S3Uploads(s3, bucket), cloud=True,
+               batch_store=cloud.batch_store, uploads=S3Uploads(s3, bucket, cloud.table), cloud=True,
                jobs=LambdaJobs(boto3.client("lambda"), os.environ["WORKER_FUNCTION"]))
 
 
@@ -83,7 +72,7 @@ def api(event, context=None):
             return _reply(json_response(415, {"error": "JSON required."}))
         raw = event.get("body") or ""
         raw = base64.b64decode(raw) if event.get("isBase64Encoded") else raw.encode("utf-8")
-        if len(raw) > body_limit(path):
+        if len(raw) > min(body_limit(path), CLOUD_UPLOAD_LIMIT):
             return _reply(json_response(413, {"error": "Too large."}))
         try:
             body = json.loads(raw or b"{}")

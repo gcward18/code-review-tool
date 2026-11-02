@@ -21,3 +21,9 @@ __pycache__/
 *.db
 *.sarif
 .ipynb_checkpoints/
+
+# Deployment build assets and synthesized templates
+.build/
+infrastructure/cdk.out/
+infrastructure/cdk.context.json
+infrastructure/coverage/

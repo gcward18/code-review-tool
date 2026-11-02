@@ -70,8 +70,8 @@ class Table:
     def __init__(self, table):
         self.table = table
 
-    def get(self, pk, sk):
-        item = self.table.get_item(Key={"PK": pk, "SK": sk}).get("Item")
+    def get(self, pk, sk, *, consistent=False):
+        item = self.table.get_item(Key={"PK": pk, "SK": sk}, ConsistentRead=consistent).get("Item")
         return from_dynamo(item) if item else None
 
     def put(self, item, **kwargs):
@@ -436,6 +436,7 @@ class DynamoKnowledgeStore:
         self.t = Table(table)
         self.s3, self.bucket = s3, bucket
         self._loaded = {}  # kb id -> chunk items, for this request
+        self._document_keys = {}  # direct uploads already know the primary key
 
     # bases
     def list_bases(self):
@@ -489,14 +490,26 @@ class DynamoKnowledgeStore:
         return any(d.get("sha256") == digest and d["status"] != "failed"
                    for d in self.t.children(f"KB#{kb_id}", "DOC#"))
 
+    @staticmethod
+    def document_item(doc_id, kb_id, name, size, digest, created_at):
+        return {"PK": f"KB#{kb_id}", "SK": f"DOC#{doc_id}", "GSI1PK": f"DOC#{doc_id}", "GSI1SK": "META",
+                "id": doc_id, "kb_id": kb_id, "name": name, "bytes": size, "sha256": digest,
+                "status": "processing", "chunks": 0, "tokens": 0, "embed_tokens": 0, "created_at": created_at}
+
     def insert_document(self, kb_id, name, size, digest, created_at):
         doc_id = self.t.next_id("document")
-        self.t.put({"PK": f"KB#{kb_id}", "SK": f"DOC#{doc_id}", "GSI1PK": f"DOC#{doc_id}", "GSI1SK": "META",
-                    "id": doc_id, "kb_id": kb_id, "name": name, "bytes": size, "sha256": digest,
-                    "status": "processing", "chunks": 0, "tokens": 0, "embed_tokens": 0, "created_at": created_at})
+        self.t.put(self.document_item(doc_id, kb_id, name, size, digest, created_at))
+        self._document_keys[doc_id] = (f"KB#{kb_id}", f"DOC#{doc_id}")
         return doc_id
 
+    def locate_document(self, kb_id, doc_id):
+        """Use a known primary key instead of waiting for the document GSI to catch up."""
+        self._document_keys[doc_id] = (f"KB#{kb_id}", f"DOC#{doc_id}")
+        return self.get_document(doc_id)
+
     def _doc_item(self, doc_id):
+        if doc_id in self._document_keys:
+            return self.t.get(*self._document_keys[doc_id], consistent=True)
         items = self.t.query(Key("GSI1PK").eq(f"DOC#{doc_id}") & Key("GSI1SK").eq("META"), index="GSI1")
         return items[0] if items else None
 

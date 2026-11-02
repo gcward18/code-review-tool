@@ -43,7 +43,7 @@ def dispatch(app, method, path, query=None, body=None, user=None):
         if method == "GET":
             return _get(app, path, query, user)
         if method == "POST":
-            return _post(app, path, body)
+            return _post(app, path, body, user)
         raise ApiError(405, "Method not allowed.")
     except ApiError as error:
         return json_response(error.status, {"error": str(error)})
@@ -100,7 +100,7 @@ def _get(app, path, query, user):
     raise ApiError(404, "Not found.")
 
 
-def _post(app, path, body):
+def _post(app, path, body, user=None):
     ok = lambda value: json_response(200, value)
     if path == "/api/reviews":
         return json_response(202, app.submit(body))
@@ -110,7 +110,7 @@ def _post(app, path, body):
         app.store.clear_chat(None)
         return ok({"messages": []})
     if (parts := _prefixed(path, "/api/knowledge")) is not None:
-        return ok(app.knowledge("POST", parts, body))
+        return ok(app.knowledge("POST", parts, body, user=user))
     if (parts := _prefixed(path, "/api/remotes")) is not None:
         return ok(app.remotes("POST", parts, body))
     if (parts := _prefixed(path, "/api/batches")) is not None:

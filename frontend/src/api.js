@@ -1,26 +1,32 @@
-let token = null;
+import { uploadDocument } from "./uploads.js";
+import { createTransport } from "./transport.js";
 
-async function call(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json", "X-AutoSDE-Token": token } : {}),
-      ...(options.headers || {}),
-    },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
-  return data;
+let transport;
+export function configureApi(options) {
+  transport = createTransport(options);
+}
+const call = (path, options) => {
+  if (!transport) throw new Error("API configuration has not loaded.");
+  return transport.call(path, options);
+};
+
+export async function downloadSarif(id) {
+  const response = await transport.request(`/api/reviews/${id}.sarif`);
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `review-${id}.sarif`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 const q = (params) => new URLSearchParams(params).toString();
 
 export const api = {
-  async session() {
-    const data = await call("/api/session");
-    token = data.token;
-    return data;
-  },
+  maxDocumentBytes: () => transport.maxDocumentBytes,
+  session: () => call("/api/session"),
   homeChat: () => call("/api/chat"),
   askHome: (message) => call("/api/chat", { method: "POST", body: JSON.stringify({ message }) }),
   clearHomeChat: () => call("/api/chat/clear", { method: "POST", body: "{}" }),
@@ -39,8 +45,7 @@ export const api = {
   updateKnowledge: (id, change) =>
     call(`/api/knowledge/${id}`, { method: "POST", body: JSON.stringify(change) }),
   deleteKnowledge: (id) => call(`/api/knowledge/${id}/delete`, { method: "POST", body: "{}" }),
-  uploadDocument: (id, name, data) =>
-    call(`/api/knowledge/${id}/documents`, { method: "POST", body: JSON.stringify({ name, data }) }),
+  uploadDocument: (id, name, blob) => uploadDocument(transport, id, name, blob),
   documentChunks: (doc) => call(`/api/knowledge/documents/${doc}/chunks`),
   renameDocument: (doc, name) =>
     call(`/api/knowledge/documents/${doc}/rename`, { method: "POST", body: JSON.stringify({ name }) }),

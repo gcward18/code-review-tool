@@ -147,6 +147,47 @@ class LambdaTests(unittest.TestCase):
         keys = [o["Key"] for o in boto3.client("s3").list_objects_v2(Bucket="autosde-test-docs").get("Contents", [])]
         self.assertFalse([k for k in keys if k.startswith("uploads/")])
 
+    def test_direct_upload_routes_survive_restart_and_dispatch_a_small_worker_job(self):
+        import hashlib
+        self.app.model_factory = lambda: type("Embedding", (), {"embed": staticmethod(
+            lambda texts, model, dimensions: ([[1.0] * dimensions for _ in texts], 10))})()
+        s3 = boto3.client("s3")
+        s3.put_bucket_versioning(Bucket="autosde-test-docs", VersioningConfiguration={"Status": "Enabled"})
+        base = self.call("POST", "/api/knowledge", {"name": "direct-conventions"})[1]
+        path = f"/api/knowledge/{base['id']}/uploads"
+        data = b"# Guidance\nKeep functions focused.\n"
+        payload = {"name": "guide.md", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        self.assertEqual(self.call("POST", path, payload, claims=None)[0], 401)
+        status, ticket = self.call("POST", path, payload)
+        self.assertEqual(status, 200)
+        self.assertIn("s3.us-east-1.amazonaws.com", ticket["url"])
+        fields = ticket["fields"]
+        s3.put_object(Bucket="autosde-test-docs", Key=fields["key"], Body=data,
+            ChecksumAlgorithm="SHA256", ChecksumSHA256=fields["x-amz-checksum-sha256"],
+            Metadata={"upload-id": ticket["upload_id"]})
+        # A fresh application has no in-memory upload state.
+        aws._APP = None
+        fresh = aws.app()
+        fresh.jobs.client = self.invokes
+        fresh.model_factory = self.app.model_factory
+        completion = path + f"/{ticket['upload_id']}/complete"
+        self.assertEqual(self.call("POST", completion, {}, claims={"sub": "other-user"})[0], 400)
+        status, document = self.call("POST", completion, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.invokes.calls[0], {"job": "ingest", "args": {"upload_ticket": ticket["upload_id"]}})
+        self.run_jobs()
+        doc = self.call("GET", f"/api/knowledge/{base['id']}")[1]["documents"][0]
+        self.assertEqual((doc["id"], doc["status"]), (document["id"], "ready"))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequestLimitTests(unittest.TestCase):
+    def test_cloud_upload_is_rejected_before_building_app_when_over_lambda_safe_limit(self):
+        request = event("POST", "/api/knowledge/1/documents")
+        request["body"] = "x" * (aws.CLOUD_UPLOAD_LIMIT + 1)
+        with patch("autosde.aws.app") as build:
+            self.assertEqual(aws.api(request)["statusCode"], 413)
+            build.assert_not_called()

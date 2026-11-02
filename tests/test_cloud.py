@@ -96,6 +96,43 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(client.get("repos/octo/calc")["default_branch"], "main")
         self.assertEqual(sent[0]["Authorization"], "Bearer ghtoken-private-sentinel")
 
+    def test_an_empty_github_secret_means_anonymous_access_with_a_clear_hint(self):
+        secrets = boto3.client("secretsmanager")
+        secrets.put_secret_value(SecretId="autosde/github-token", SecretString=" ")  # created but not filled
+        self.cloud.secrets._cache.clear()
+        sent = []
+
+        class Opener:
+            def open(self, request, timeout):
+                sent.append(dict(request.header_items()))
+                import urllib.error
+                raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+        client = self.cloud.github_client()
+        client.opener = Opener()
+        from autosde.github import GitHubError
+        with self.assertRaises(GitHubError) as error:
+            client.get("repos/octo/private")
+        self.assertNotIn("Authorization", sent[0])  # anonymous, not a crash
+        self.assertIn("autosde/github-token", str(error.exception))
+        self.assertNotIn("gh auth login", str(error.exception))
+
+    def test_unexpected_setup_errors_become_a_readable_503(self):
+        import tempfile
+        from autosde.app import ApiError, App
+        from autosde.db import Store
+        from helpers import settings
+
+        class Broken:
+            def get(self, path, raw=False):
+                raise RuntimeError("private-sentinel")
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = settings(tmp)
+            app = App(Store(cfg.db_path), cfg, github_client=Broken())
+            with self.assertRaises(ApiError) as error:
+                app.remotes("POST", [], {"repo": "octo/calc"})
+        self.assertEqual(error.exception.status, 503)
+        self.assertNotIn("sentinel", str(error.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

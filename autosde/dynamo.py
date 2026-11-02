@@ -401,3 +401,227 @@ class DynamoStore:
     def clear_chat(self, project_id):
         pk = f"CHAT#{'HOME' if project_id is None else project_id}"
         self.t.delete_all(self.t.query(Key("PK").eq(pk)))
+
+
+# --- knowledge bases -------------------------------------------------------------
+
+MAX_INLINE_TEXT = 300_000  # bytes of document text kept in the item; larger text goes to S3
+_WORD = __import__("re").compile(r"[a-z0-9_]{2,}")
+
+
+class DynamoKnowledgeStore:
+    """Knowledge bases, documents and chunks in DynamoDB.
+
+        KB#<id>        META             base (GSI2: KBS / name); KBNAME#<name> UNIQUE
+        KB#<id>        DOC#<doc id>     document (GSI1: DOC#<id> / META)
+        DOC#<doc id>   CHUNK#<pos>      chunk with its embedding (GSI1: KBCHUNKS#<kb> / <doc>#<pos>)
+
+    Keyword search is BM25 computed here over the bases' chunk text (DynamoDB has no
+    full-text index); vectors are compared in memory, as in SQLite.
+    """
+
+    def __init__(self, table, *, s3=None, bucket=None):
+        self.t = Table(table)
+        self.s3, self.bucket = s3, bucket
+        self._loaded = {}  # kb id -> chunk items, for this request
+
+    # bases
+    def list_bases(self):
+        out = []
+        for base in self.t.query(Key("GSI2PK").eq("KBS"), index="GSI2"):
+            docs = self.t.children(base["PK"], "DOC#")
+            out.append({**_clean(base), "documents": len(docs),
+                        "chunks": sum(d.get("chunks", 0) for d in docs),
+                        "tokens": sum(d.get("tokens", 0) for d in docs)})
+        return sorted(out, key=lambda b: b["name"])
+
+    def list_documents(self, kb_id):
+        docs = [self._document(d) for d in self.t.children(f"KB#{kb_id}", "DOC#")]
+        for d in docs:
+            d["has_text"] = int(bool(d.pop("content_inline", None) or d.pop("content_key", None)))
+            for key in ("content", "kb_id", "sha256"):
+                d.pop(key, None)
+        return sorted(docs, key=lambda d: d["created_at"], reverse=True)
+
+    def insert_base(self, name, description, settings, created_at):
+        kb_id = self.t.next_id("kb")
+        try:
+            self.t.put({"PK": f"KBNAME#{name}", "SK": "UNIQUE", "kb_id": kb_id},
+                       ConditionExpression="attribute_not_exists(PK)")
+        except self.t.table.meta.client.exceptions.ConditionalCheckFailedException:
+            from autosde.knowledge import KnowledgeError
+            raise KnowledgeError("A knowledge base with that name already exists.") from None
+        self.t.put({"PK": f"KB#{kb_id}", "SK": "META", "GSI2PK": "KBS", "GSI2SK": name, "id": kb_id,
+                    "name": name, "description": description, "settings": settings, "created_at": created_at})
+        return kb_id
+
+    def update_base(self, kb_id, description, settings):
+        self.t.update(f"KB#{kb_id}", "META", {"description": description, "settings": settings})
+
+    def delete_base(self, kb_id):
+        base = self.t.get(f"KB#{kb_id}", "META")
+        for doc in self.t.children(f"KB#{kb_id}", "DOC#"):
+            self.delete_document(doc["id"])
+        if base:
+            self.t.delete(f"KBNAME#{base['name']}", "UNIQUE")
+        self.t.delete(f"KB#{kb_id}", "META")
+
+    # documents
+    def _document(self, item):
+        doc = _clean(item)
+        for key in ("error", "strategy", "chunks", "tokens", "embed_tokens"):
+            doc.setdefault(key, 0 if key in ("chunks", "tokens", "embed_tokens") else None)
+        return doc
+
+    def has_document(self, kb_id, digest):
+        return any(d.get("sha256") == digest and d["status"] != "failed"
+                   for d in self.t.children(f"KB#{kb_id}", "DOC#"))
+
+    def insert_document(self, kb_id, name, size, digest, created_at):
+        doc_id = self.t.next_id("document")
+        self.t.put({"PK": f"KB#{kb_id}", "SK": f"DOC#{doc_id}", "GSI1PK": f"DOC#{doc_id}", "GSI1SK": "META",
+                    "id": doc_id, "kb_id": kb_id, "name": name, "bytes": size, "sha256": digest,
+                    "status": "processing", "chunks": 0, "tokens": 0, "embed_tokens": 0, "created_at": created_at})
+        return doc_id
+
+    def _doc_item(self, doc_id):
+        items = self.t.query(Key("GSI1PK").eq(f"DOC#{doc_id}") & Key("GSI1SK").eq("META"), index="GSI1")
+        return items[0] if items else None
+
+    def get_document(self, doc_id):
+        item = self._doc_item(doc_id)
+        if not item:
+            return None
+        doc = self._document(item)
+        inline, key = doc.pop("content_inline", None), doc.pop("content_key", None)
+        if key and self.s3 is not None:
+            doc["content"] = self.s3.get_object(Bucket=self.bucket, Key=key)["Body"].read().decode("utf-8")
+        else:
+            doc["content"] = inline
+        return doc
+
+    def documents_of(self, kb_id):
+        return [self.get_document(d["id"]) for d in self.t.children(f"KB#{kb_id}", "DOC#")]
+
+    def update_document(self, doc_id, *, add_embed_tokens=0, **fields):
+        item = self._doc_item(doc_id)
+        if not item:
+            return
+        if "content" in fields:
+            text = fields.pop("content")
+            data = (text or "").encode("utf-8")
+            if len(data) <= MAX_INLINE_TEXT:
+                fields["content_inline"] = text
+            elif self.s3 is not None:
+                key = f"documents/{item['kb_id']}/{doc_id}.txt"
+                self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ServerSideEncryption="AES256")
+                fields["content_key"] = key
+            else:
+                from autosde.knowledge import KnowledgeError
+                raise KnowledgeError("That document's text is too large to store without a bucket.")
+        remove = [k for k, v in fields.items() if v is None]
+        values = {k: v for k, v in fields.items() if v is not None}
+        self.t.update(item["PK"], item["SK"], values or None,
+                      add={"embed_tokens": add_embed_tokens} if add_embed_tokens else None, remove=remove)
+
+    def _chunks(self, doc_id):
+        return self.t.children(f"DOC#{doc_id}", "CHUNK#")
+
+    def replace_chunks(self, doc, pieces, vectors, *, document_fields, add_embed_tokens):
+        from autosde.knowledge import pack
+
+        self.t.delete_all(self._chunks(doc["id"]))
+        with self.t.table.batch_writer() as batch:
+            for item, vector in zip(pieces, vectors):
+                batch.put_item(Item=to_dynamo({
+                    "PK": f"DOC#{doc['id']}", "SK": f"CHUNK#{item.position:06d}",
+                    "GSI1PK": f"KBCHUNKS#{doc['kb_id']}", "GSI1SK": f"{doc['id']:010d}#{item.position:06d}",
+                    "id": f"{doc['id']}:{item.position}", "doc_id": doc["id"], "kb_id": doc["kb_id"],
+                    "position": item.position, "heading": item.heading, "text": item.text,
+                    "tokens": item.tokens, "embedding": pack(vector)}))
+        self.update_document(doc["id"], add_embed_tokens=add_embed_tokens, **document_fields)
+        self._loaded.pop(doc["kb_id"], None)
+
+    def delete_document(self, doc_id):
+        item = self._doc_item(doc_id)
+        self.t.delete_all(self._chunks(doc_id))
+        if item:
+            if item.get("content_key") and self.s3 is not None:
+                self.s3.delete_object(Bucket=self.bucket, Key=item["content_key"])
+            self.t.delete(item["PK"], item["SK"])
+            self._loaded.pop(item["kb_id"], None)
+
+    # chunks
+    @staticmethod
+    def _split_id(chunk_id):
+        doc_id, position = str(chunk_id).split(":")
+        return int(doc_id), int(position)
+
+    def chunk_rows(self, doc_id):
+        return [{"id": c["id"], "position": c["position"], "heading": c["heading"], "text": c["text"],
+                 "tokens": c["tokens"], "summary": c.get("summary")} for c in self._chunks(doc_id)]
+
+    def set_chunk_summary(self, chunk_id, summary):
+        doc_id, position = self._split_id(chunk_id)
+        self.t.update(f"DOC#{doc_id}", f"CHUNK#{position:06d}", {"summary": summary})
+
+    def set_chunk_heading(self, chunk_id, heading, text):
+        doc_id, position = self._split_id(chunk_id)
+        self.t.update(f"DOC#{doc_id}", f"CHUNK#{position:06d}", {"heading": heading})
+
+    def unsummarized(self, doc_id):
+        return sum(1 for c in self._chunks(doc_id) if not c.get("summary"))
+
+    def _kb_chunks(self, kb_ids):
+        items = []
+        for kb_id in kb_ids:
+            if kb_id not in self._loaded:
+                self._loaded[kb_id] = self.t.query(Key("GSI1PK").eq(f"KBCHUNKS#{kb_id}"), index="GSI1")
+            items += self._loaded[kb_id]
+        return items
+
+    def vectors(self, kb_ids):
+        for c in self._kb_chunks(kb_ids):
+            blob = c["embedding"]
+            yield c["id"], bytes(blob.value if hasattr(blob, "value") else blob)
+
+    def keyword(self, kb_ids, terms, limit, *, k1=1.2, b=0.75):
+        """BM25 over heading and text (the same scoring FTS5 uses, without stemming)."""
+        import math
+
+        docs = [(c["id"], _WORD.findall(f"{c['heading']} {c['text']}".lower())) for c in self._kb_chunks(kb_ids)]
+        if not docs:
+            return []
+        average = sum(len(words) for _, words in docs) / len(docs)
+        wanted = list(dict.fromkeys(terms))
+        frequency = {t: sum(1 for _, words in docs if t in words) for t in wanted}
+        scored = []
+        for cid, words in docs:
+            counts = {}
+            for word in words:
+                if word in frequency:
+                    counts[word] = counts.get(word, 0) + 1
+            score = 0.0
+            for term, n in counts.items():
+                idf = math.log(1 + (len(docs) - frequency[term] + 0.5) / (frequency[term] + 0.5))
+                score += idf * n * (k1 + 1) / (n + k1 * (1 - b + b * len(words) / average))
+            if score > 0:
+                scored.append((cid, score))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:limit]
+
+    def chunks_by_ids(self, ids):
+        wanted = set(ids)
+        names, out = {}, {}
+        for c in self._kb_chunks(list(self._loaded)):  # the bases this search just loaded
+            if c["id"] not in wanted:
+                continue
+            if c["doc_id"] not in names:
+                doc = self._doc_item(c["doc_id"]) or {}
+                base = self.t.get(f"KB#{c['kb_id']}", "META") or {}
+                names[c["doc_id"]] = (doc.get("name"), base.get("name"))
+            document, knowledge_base = names[c["doc_id"]]
+            out[c["id"]] = {"id": c["id"], "doc_id": c["doc_id"], "kb_id": c["kb_id"], "position": c["position"],
+                            "heading": c["heading"], "text": c["text"], "tokens": c["tokens"],
+                            "summary": c.get("summary"), "document": document, "knowledge_base": knowledge_base}
+        return out

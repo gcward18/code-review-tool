@@ -365,12 +365,11 @@ def settings_for(raw=None):
     return out
 
 
-class Knowledge:
-    """Knowledge bases in the AutoSDE database. `embed(texts, model, dimensions)` returns
-    (vectors, tokens_used); `scan(text)` returns gitleaks rule ids (empty when clean)."""
+class SqliteKnowledgeStore:
+    """Knowledge base persistence in SQLite (FTS5 for keyword search)."""
 
-    def __init__(self, db, *, embed, scan, clock=time.time, create=True):
-        self.db, self.embed, self.scan, self.clock = db, embed, scan, clock
+    def __init__(self, db, *, create=True):
+        self.db = db
         if create:
             self.db.executescript(SCHEMA)
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(kb_documents)")}
@@ -383,15 +382,132 @@ class Knowledge:
     def _all(self, sql, *args):
         return [dict(row) for row in self.db.execute(sql, args)]
 
-    # bases
-    def bases(self):
-        rows = self._all(
+    def list_bases(self):
+        return self._all(
             "SELECT k.*, COUNT(d.id) AS documents, COALESCE(SUM(d.chunks), 0) AS chunks,"
             " COALESCE(SUM(d.tokens), 0) AS tokens FROM knowledge_bases k"
             " LEFT JOIN kb_documents d ON d.kb_id = k.id GROUP BY k.id ORDER BY k.name")
+
+    def list_documents(self, kb_id):
+        return self._all(
+            "SELECT id, name, bytes, status, error, chunks, tokens, embed_tokens, strategy,"
+            " content IS NOT NULL AS has_text, created_at"
+            " FROM kb_documents WHERE kb_id = ? ORDER BY created_at DESC", kb_id)
+
+    def insert_base(self, name, description, settings, created_at):
+        try:
+            return self.db.execute(
+                "INSERT INTO knowledge_bases(name, description, settings, created_at) VALUES (?, ?, ?, ?)",
+                (name, description, settings, created_at)).lastrowid
+        except Exception:
+            raise KnowledgeError("A knowledge base with that name already exists.") from None
+
+    def update_base(self, kb_id, description, settings):
+        self.db.execute("UPDATE knowledge_bases SET description = ?, settings = ? WHERE id = ?",
+                        (description, settings, kb_id))
+
+    def delete_base(self, kb_id):
+        for row in self._all("SELECT id FROM kb_chunks WHERE kb_id = ?", kb_id):
+            self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (row["id"],))
+        self.db.execute("DELETE FROM kb_chunks WHERE kb_id = ?", (kb_id,))
+        self.db.execute("DELETE FROM knowledge_bases WHERE id = ?", (kb_id,))
+
+    def has_document(self, kb_id, digest):
+        return bool(self.db.execute("SELECT 1 FROM kb_documents WHERE kb_id = ? AND sha256 = ?"
+                                    " AND status != 'failed'", (kb_id, digest)).fetchone())
+
+    def insert_document(self, kb_id, name, size, digest, created_at):
+        return self.db.execute(
+            "INSERT INTO kb_documents(kb_id, name, bytes, sha256, status, created_at)"
+            " VALUES (?, ?, ?, ?, 'processing', ?)", (kb_id, name, size, digest, created_at)).lastrowid
+
+    def get_document(self, doc_id):
+        rows = self._all("SELECT * FROM kb_documents WHERE id = ?", doc_id)
+        return rows[0] if rows else None
+
+    def documents_of(self, kb_id):
+        return self._all("SELECT * FROM kb_documents WHERE kb_id = ?", kb_id)
+
+    def update_document(self, doc_id, *, add_embed_tokens=0, **fields):
+        sets = [f"{k} = ?" for k in fields] + (["embed_tokens = embed_tokens + ?"] if add_embed_tokens else [])
+        self.db.execute(f"UPDATE kb_documents SET {', '.join(sets)} WHERE id = ?",
+                        (*fields.values(), *([add_embed_tokens] if add_embed_tokens else []), doc_id))
+
+    def _clear(self, doc_id):
+        for row in self._all("SELECT id FROM kb_chunks WHERE doc_id = ?", doc_id):
+            self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (row["id"],))
+        self.db.execute("DELETE FROM kb_chunks WHERE doc_id = ?", (doc_id,))
+
+    def replace_chunks(self, doc, pieces, vectors, *, document_fields, add_embed_tokens):
+        with self.db:
+            self._clear(doc["id"])
+            for item, vector in zip(pieces, vectors):
+                cursor = self.db.execute(
+                    "INSERT INTO kb_chunks(doc_id, kb_id, position, heading, text, tokens, embedding)"
+                    " VALUES (?,?,?,?,?,?,?)",
+                    (doc["id"], doc["kb_id"], item.position, item.heading, item.text, item.tokens, pack(vector)))
+                self.db.execute("INSERT INTO kb_fts(rowid, heading, text) VALUES (?, ?, ?)",
+                                (cursor.lastrowid, item.heading, item.text))
+            self.update_document(doc["id"], add_embed_tokens=add_embed_tokens, **document_fields)
+
+    def delete_document(self, doc_id):
+        self._clear(doc_id)
+        self.db.execute("DELETE FROM kb_documents WHERE id = ?", (doc_id,))
+
+    def chunk_rows(self, doc_id):
+        return self._all("SELECT id, position, heading, text, tokens, summary FROM kb_chunks"
+                         " WHERE doc_id = ? ORDER BY position", doc_id)
+
+    def set_chunk_summary(self, chunk_id, summary):
+        self.db.execute("UPDATE kb_chunks SET summary = ? WHERE id = ?", (summary, chunk_id))
+
+    def set_chunk_heading(self, chunk_id, heading, text):
+        self.db.execute("UPDATE kb_chunks SET heading = ? WHERE id = ?", (heading, chunk_id))
+        self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (chunk_id,))
+        self.db.execute("INSERT INTO kb_fts(rowid, heading, text) VALUES (?, ?, ?)", (chunk_id, heading, text))
+
+    def unsummarized(self, doc_id):
+        return self.db.execute("SELECT COUNT(*) FROM kb_chunks WHERE doc_id = ? AND summary IS NULL",
+                               (doc_id,)).fetchone()[0]
+
+    def vectors(self, kb_ids):
+        return self.db.execute(f"SELECT id, embedding FROM kb_chunks WHERE kb_id IN ({','.join('?' * len(kb_ids))})",
+                               list(kb_ids))
+
+    def keyword(self, kb_ids, terms, limit):
+        match = " OR ".join(f'"{t}"' for t in dict.fromkeys(terms))
+        rows = self.db.execute(
+            f"SELECT f.rowid, bm25(kb_fts) FROM kb_fts f JOIN kb_chunks c ON c.id = f.rowid"
+            f" WHERE kb_fts MATCH ? AND c.kb_id IN ({','.join('?' * len(kb_ids))}) ORDER BY bm25(kb_fts) LIMIT ?",
+            (match, *kb_ids, limit))
+        return [(cid, -score) for cid, score in rows]
+
+    def chunks_by_ids(self, ids):
+        return {r["id"]: r for r in self._all(
+            f"SELECT c.id, c.doc_id, c.kb_id, c.position, c.heading, c.text, c.tokens, c.summary,"
+            f" d.name AS document, k.name AS knowledge_base FROM kb_chunks c"
+            f" JOIN kb_documents d ON d.id = c.doc_id JOIN knowledge_bases k ON k.id = c.kb_id"
+            f" WHERE c.id IN ({','.join('?' * len(ids))})", *ids)}
+
+
+class Knowledge:
+    """Knowledge bases. `store` is a SQLite connection or a knowledge store (SQLite or
+    DynamoDB); `embed(texts, model, dimensions)` returns (vectors, tokens_used); `scan(text)`
+    returns gitleaks rule ids (empty when clean)."""
+
+    def __init__(self, store, *, embed, scan, clock=time.time, create=True):
+        import sqlite3
+
+        self.store = SqliteKnowledgeStore(store, create=create) if isinstance(store, sqlite3.Connection) else store
+        self.embed, self.scan, self.clock = embed, scan, clock
+
+    # bases
+    def bases(self):
+        rows = self.store.list_bases()
         for row in rows:
             # Bases saved before newer settings existed get today's defaults for them.
-            row["settings"] = {**DEFAULTS, **json.loads(row["settings"])}
+            saved = row["settings"]
+            row["settings"] = {**DEFAULTS, **(json.loads(saved) if isinstance(saved, str) else saved)}
         return rows
 
     def base(self, kb_id):
@@ -399,24 +515,16 @@ class Knowledge:
         if not rows:
             raise KnowledgeError("No such knowledge base.")
         base = rows[0]
-        base["documents"] = self._all(
-            "SELECT id, name, bytes, status, error, chunks, tokens, embed_tokens, strategy,"
-            " content IS NOT NULL AS has_text, created_at"
-            " FROM kb_documents WHERE kb_id = ? ORDER BY created_at DESC", kb_id)
+        base["documents"] = self.store.list_documents(kb_id)
         return base
 
     def create(self, name, description="", settings=None):
         name = (name or "").strip()
         if not re.fullmatch(r"[\w .:-]{1,60}", name):
             raise KnowledgeError("Name: up to 60 letters, digits, spaces and ._:-")
-        try:
-            cursor = self.db.execute(
-                "INSERT INTO knowledge_bases(name, description, settings, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (name, (description or "")[:500], json.dumps(settings_for(settings)), self.clock()))
-        except Exception:
-            raise KnowledgeError("A knowledge base with that name already exists.") from None
-        return self.base(cursor.lastrowid)
+        kb_id = self.store.insert_base(name, (description or "")[:500], json.dumps(settings_for(settings)),
+                                       self.clock())
+        return self.base(kb_id)
 
     def update(self, kb_id, *, description=None, settings=None):
         base = self.base(kb_id)
@@ -425,42 +533,33 @@ class Knowledge:
                                                              base["settings"]["dimensions"]) \
                 and base["chunks"]:
             raise KnowledgeError("Change the embedding model only on an empty knowledge base.")
-        self.db.execute("UPDATE knowledge_bases SET description = ?, settings = ? WHERE id = ?",
-                        ((base["description"] if description is None else description)[:500],
-                         json.dumps(merged), kb_id))
+        self.store.update_base(kb_id, (base["description"] if description is None else description)[:500],
+                               json.dumps(merged))
         return self.base(kb_id)
 
     def delete(self, kb_id):
-        for row in self._all("SELECT id FROM kb_chunks WHERE kb_id = ?", kb_id):
-            self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (row["id"],))
-        self.db.execute("DELETE FROM kb_chunks WHERE kb_id = ?", (kb_id,))
-        self.db.execute("DELETE FROM knowledge_bases WHERE id = ?", (kb_id,))
+        self.store.delete_base(kb_id)
 
     # documents
     def add_document(self, kb_id, name, data):
         """Record the upload; `ingest` does the work (call it on a background thread)."""
         self.base(kb_id)
         digest = hashlib.sha256(data).hexdigest()
-        if self.db.execute("SELECT 1 FROM kb_documents WHERE kb_id = ? AND sha256 = ?"
-                           " AND status != 'failed'", (kb_id, digest)).fetchone():
+        if self.store.has_document(kb_id, digest):
             raise KnowledgeError("That document is already in this knowledge base.")
         name = re.sub(r"[^\w .()\-]", "_", (name or "document").strip())[:120] or "document"
-        cursor = self.db.execute(
-            "INSERT INTO kb_documents(kb_id, name, bytes, sha256, status, created_at)"
-            " VALUES (?, ?, ?, ?, 'processing', ?)",
-            (kb_id, name, len(data), digest, self.clock()))
-        return cursor.lastrowid
+        return self.store.insert_document(kb_id, name, len(data), digest, self.clock())
 
     def ingest(self, doc_id, data):
         """Extract, scan, chunk and embed an uploaded document (run on a background thread)."""
-        doc = self._all("SELECT * FROM kb_documents WHERE id = ?", doc_id)[0]
+        doc = self.store.get_document(doc_id)
         try:
             text = extract(doc["name"], data)
             if not text.strip():
                 raise KnowledgeError("No text found in that file.")
             if self.scan(text):
                 raise KnowledgeError("Gitleaks flagged a possible secret; the document was not embedded.")
-            self.db.execute("UPDATE kb_documents SET content = ? WHERE id = ?", (text, doc_id))
+            self.store.update_document(doc_id, content=text)
         except Exception as error:
             self._fail(doc_id, error)
             return
@@ -473,8 +572,7 @@ class Knowledge:
             reason = "Gitleaks is not available; set AUTOSDE_GITLEAKS to scan documents."
         else:  # embedding API or other failure: class name only, never a message
             reason = f"Embedding failed ({type(error).__name__})."
-        self.db.execute("UPDATE kb_documents SET status = 'failed', error = ? WHERE id = ?",
-                        (reason, doc_id))
+        self.store.update_document(doc_id, status="failed", error=reason)
 
     def _split(self, name, text, settings):
         from autosde.chunking import split
@@ -500,45 +598,28 @@ class Knowledge:
                 got, spent = self._embed(batch, settings["embed_model"], settings["dimensions"])
                 vectors += got
                 used += spent
-            with self.db:
-                self._clear_chunks(doc["id"])
-                for item, vector in zip(pieces, vectors):
-                    cursor = self.db.execute(
-                        "INSERT INTO kb_chunks(doc_id, kb_id, position, heading, text, tokens,"
-                        " embedding) VALUES (?,?,?,?,?,?,?)",
-                        (doc["id"], doc["kb_id"], item.position, item.heading, item.text,
-                         item.tokens, pack(vector)))
-                    self.db.execute("INSERT INTO kb_fts(rowid, heading, text) VALUES (?, ?, ?)",
-                                    (cursor.lastrowid, item.heading, item.text))
-                self.db.execute(
-                    "UPDATE kb_documents SET status = 'ready', error = NULL, chunks = ?, tokens = ?,"
-                    " embed_tokens = embed_tokens + ?, strategy = ? WHERE id = ?",
-                    (len(pieces), sum(p.tokens for p in pieces), used, settings["strategy"], doc["id"]))
+            self.store.replace_chunks(doc, pieces, vectors, add_embed_tokens=used, document_fields={
+                "status": "ready", "error": None, "chunks": len(pieces),
+                "tokens": sum(p.tokens for p in pieces), "strategy": settings["strategy"]})
         except Exception as error:
             self._fail(doc["id"], error)
 
-    def _clear_chunks(self, doc_id):
-        for row in self._all("SELECT id FROM kb_chunks WHERE doc_id = ?", doc_id):
-            self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (row["id"],))
-        self.db.execute("DELETE FROM kb_chunks WHERE doc_id = ?", (doc_id,))
-
     def retry(self, doc_id):
         """Re-index one document from its stored text (after a failure or a strategy change)."""
-        rows = self._all("SELECT * FROM kb_documents WHERE id = ?", doc_id)
-        if not rows:
+        doc = self.store.get_document(doc_id)
+        if not doc:
             raise KnowledgeError("No such document.")
-        if not rows[0]["content"]:
+        if not doc["content"]:
             raise KnowledgeError("That document has no stored text; remove it and upload it again.")
-        self.db.execute("UPDATE kb_documents SET status = 'processing', error = NULL WHERE id = ?",
-                        (doc_id,))
-        return rows[0]
+        self.store.update_document(doc_id, status="processing", error=None)
+        return doc
 
     def rechunk(self, kb_id):
         """Mark documents with stored text for re-indexing; returns (doc rows, skipped names)."""
-        docs = self._all("SELECT * FROM kb_documents WHERE kb_id = ?", kb_id)
+        docs = self.store.documents_of(kb_id)
         ready = [d for d in docs if d["content"]]
         for doc in ready:
-            self.db.execute("UPDATE kb_documents SET status = 'processing' WHERE id = ?", (doc["id"],))
+            self.store.update_document(doc["id"], status="processing")
         return ready, [d["name"] for d in docs if not d["content"]]
 
     def reindex(self, docs):
@@ -552,11 +633,10 @@ class Knowledge:
         base = self.base(kb_id)
         merged = settings_for({**base["settings"], **(settings or {})})
         if doc_id is not None:
-            rows = self._all("SELECT name, content FROM kb_documents WHERE id = ? AND kb_id = ?",
-                             doc_id, kb_id)
-            if not rows or not rows[0]["content"]:
+            doc = self.store.get_document(doc_id)
+            if not doc or doc["kb_id"] != kb_id or not doc["content"]:
                 raise KnowledgeError("That document has no stored text; upload it again to preview.")
-            name, text = rows[0]["name"], rows[0]["content"]
+            name, text = doc["name"], doc["content"]
         else:
             text = (text or "").strip()
             if not text or len(text) > 200_000:
@@ -571,36 +651,29 @@ class Knowledge:
 
     def rename(self, doc_id, name):
         """Rename a document; its chunks' heading paths (and keyword index) follow."""
-        rows = self._all("SELECT name FROM kb_documents WHERE id = ?", doc_id)
-        if not rows:
+        doc = self.store.get_document(doc_id)
+        if not doc:
             raise KnowledgeError("No such document.")
-        old = rows[0]["name"]
+        old = doc["name"]
         new = re.sub(r"[^\w .()\-]", "_", (name or "").strip())[:120]
         if not new:
             raise KnowledgeError("Give the document a name.")
         old_suffix = old.rsplit(".", 1)[-1].lower() if "." in old else ""
         if old_suffix and not new.lower().endswith("." + old_suffix):
             new += "." + old_suffix  # keep the type, which decides how the text is chunked
-        with self.db:
-            self.db.execute("UPDATE kb_documents SET name = ? WHERE id = ?", (new, doc_id))
-            for chunk_row in self._all("SELECT id, heading, text FROM kb_chunks WHERE doc_id = ?", doc_id):
-                heading = chunk_row["heading"]
-                if heading == old or heading.startswith(old + " > "):
-                    heading = new + heading[len(old):]
-                    self.db.execute("UPDATE kb_chunks SET heading = ? WHERE id = ?", (heading, chunk_row["id"]))
-                    self.db.execute("DELETE FROM kb_fts WHERE rowid = ?", (chunk_row["id"],))
-                    self.db.execute("INSERT INTO kb_fts(rowid, heading, text) VALUES (?, ?, ?)",
-                                    (chunk_row["id"], heading, chunk_row["text"]))
+        self.store.update_document(doc_id, name=new)
+        for row in self.store.chunk_rows(doc_id):
+            heading = row["heading"]
+            if heading == old or heading.startswith(old + " > "):
+                self.store.set_chunk_heading(row["id"], new + heading[len(old):], row["text"])
         return {"id": doc_id, "name": new}
 
     def delete_document(self, doc_id):
-        self._clear_chunks(doc_id)
-        self.db.execute("DELETE FROM kb_documents WHERE id = ?", (doc_id,))
+        self.store.delete_document(doc_id)
 
     def chunks(self, doc_id):
         """A document's chunks with their cached summary and locally computed key terms."""
-        rows = self._all("SELECT id, position, heading, text, tokens, summary FROM kb_chunks"
-                         " WHERE doc_id = ? ORDER BY position", doc_id)
+        rows = self.store.chunk_rows(doc_id)
         for row, terms in zip(rows, key_terms([r["text"] for r in rows])):
             row["terms"] = terms
         return rows
@@ -610,15 +683,12 @@ class Knowledge:
 
         `complete(prompt_json, schema)` returns the parsed reply or None. Returns the number
         summarized, how many remain, and the model tokens spent."""
-        rows = self._all("SELECT id, position, heading, text FROM kb_chunks WHERE doc_id = ?"
-                         " ORDER BY position", doc_id)
+        rows = self.store.chunk_rows(doc_id)
         if positions is not None:
             wanted = set(positions)
             todo = [r for r in rows if r["position"] in wanted]
         else:
-            done = {r["id"] for r in self._all("SELECT id FROM kb_chunks WHERE doc_id = ?"
-                                               " AND summary IS NOT NULL", doc_id)}
-            todo = [r for r in rows if r["id"] not in done]
+            todo = [r for r in rows if not r.get("summary")]
         summarized, spent = 0, [0, 0]
         for start in range(0, min(len(todo), limit), batch):
             group = todo[start:min(start + batch, limit)]
@@ -631,14 +701,12 @@ class Knowledge:
             for r in group:
                 text = by_n.get(r["position"] + 1)
                 if text:
-                    self.db.execute("UPDATE kb_chunks SET summary = ? WHERE id = ?", (text[:300], r["id"]))
+                    self.store.set_chunk_summary(r["id"], text[:300])
                     summarized += 1
             if reply is None:
                 break  # the model call failed; stop rather than retry
-        remaining = self.db.execute("SELECT COUNT(*) FROM kb_chunks WHERE doc_id = ? AND summary IS NULL",
-                                    (doc_id,)).fetchone()[0]
-        return {"summarized": summarized, "remaining": remaining, "input_tokens": spent[0],
-                "output_tokens": spent[1]}
+        return {"summarized": summarized, "remaining": self.store.unsummarized(doc_id),
+                "input_tokens": spent[0], "output_tokens": spent[1]}
 
     # retrieval
     def search(self, kb_ids, query, *, top_k=None, context_tokens=None):
@@ -653,7 +721,6 @@ class Knowledge:
         first = next(iter(bases.values()))["settings"]
         top_k = top_k or first["top_k"]
         budget = context_tokens or first["context_tokens"]
-        marks = ",".join("?" * len(bases))
         candidates = max(30, top_k * 5)
 
         # Vector ranking, per embedding configuration (bases can differ).
@@ -666,25 +733,17 @@ class Knowledge:
         for (model, dims), ids in groups.items():
             [qvec], _ = self._embed([query[:8000]], model, dims)
             q = unpack(pack(qvec))
-            rows = self.db.execute(
-                f"SELECT id, embedding FROM kb_chunks WHERE kb_id IN ({','.join('?' * len(ids))})",
-                ids)
-            scored += [(dot(q, unpack(blob)), cid) for cid, blob in rows]
-        scored.sort(reverse=True)
+            scored += [(dot(q, unpack(blob)), cid) for cid, blob in self.store.vectors(ids)]
+        scored.sort(key=lambda pair: pair[0], reverse=True)
         for rank, (score, cid) in enumerate(scored[:candidates]):
             vector_rank[cid] = (rank, score)
 
-        # Keyword ranking with FTS5 BM25 over the query's terms.
+        # Keyword ranking by BM25 over the query's terms.
         terms = [t for t in re.findall(r"[A-Za-z0-9_]{2,}", query.lower())][:40]
         keyword_rank = {}
         if terms:
-            match = " OR ".join(f'"{t}"' for t in dict.fromkeys(terms))
-            rows = self.db.execute(
-                f"SELECT f.rowid, bm25(kb_fts) FROM kb_fts f JOIN kb_chunks c ON c.id = f.rowid"
-                f" WHERE kb_fts MATCH ? AND c.kb_id IN ({marks}) ORDER BY bm25(kb_fts) LIMIT ?",
-                (match, *bases, candidates))
-            for rank, (cid, score) in enumerate(rows):
-                keyword_rank[cid] = (rank, -score)
+            for rank, (cid, score) in enumerate(self.store.keyword(list(bases), terms, candidates)):
+                keyword_rank[cid] = (rank, score)
 
         # Reciprocal rank fusion, then per-document cap and token budget.
         fused = {}
@@ -694,11 +753,7 @@ class Knowledge:
         if not fused:
             return []
         ids = sorted(fused, key=fused.get, reverse=True)
-        rows = {r["id"]: r for r in self._all(
-            f"SELECT c.id, c.doc_id, c.kb_id, c.position, c.heading, c.text, c.tokens, c.summary,"
-            f" d.name AS document, k.name AS knowledge_base FROM kb_chunks c"
-            f" JOIN kb_documents d ON d.id = c.doc_id JOIN knowledge_bases k ON k.id = c.kb_id"
-            f" WHERE c.id IN ({','.join('?' * len(ids))})", *ids)}
+        rows = self.store.chunks_by_ids(ids)
         results, per_doc, spent = [], {}, 0
         for cid in ids:
             row = rows[cid]

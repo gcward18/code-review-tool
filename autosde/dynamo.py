@@ -625,3 +625,77 @@ class DynamoKnowledgeStore:
                             "heading": c["heading"], "text": c["text"], "tokens": c["tokens"],
                             "summary": c.get("summary"), "document": document, "knowledge_base": knowledge_base}
         return out
+
+
+# --- history batches and GitHub repositories ---------------------------------------
+
+class DynamoBatchStore:
+    """BATCH#<id> META, listed per repository through GSI1 (REPO#<repo>#BATCHES)."""
+
+    def __init__(self, table):
+        self.t = Table(table)
+
+    def get(self, batch_id):
+        item = self.t.get(f"BATCH#{batch_id}", "META")
+        return _clean(item) if item else None
+
+    def for_repo(self, repo, limit=20):
+        return [_clean(i) for i in self.t.query(Key("GSI1PK").eq(f"REPO#{repo}#BATCHES"), index="GSI1",
+                                               forward=False, limit=limit)]
+
+    def insert(self, row):
+        batch_id = self.t.next_id("batch")
+        self.t.put({"PK": f"BATCH#{batch_id}", "SK": "META", "GSI1PK": f"REPO#{row['repo']}#BATCHES",
+                    "GSI1SK": stamp(row["created_at"], batch_id), "id": batch_id, **row})
+        return batch_id
+
+    def update(self, batch_id, **fields):
+        self.t.update(f"BATCH#{batch_id}", "META", fields)
+
+
+class DynamoRemoteStore:
+    """REMOTE#<id> META, listed through GSI2 (REMOTES / owner/name)."""
+
+    def __init__(self, table):
+        self.t = Table(table)
+
+    def list(self):
+        rows = [_clean(i) for i in self.t.query(Key("GSI2PK").eq("REMOTES"), index="GSI2")]
+        for row in rows:
+            row.setdefault("error", None)
+            row.setdefault("fetched_at", None)
+        return rows
+
+    def get(self, remote_id):
+        item = self.t.get(f"REMOTE#{remote_id}", "META")
+        if not item:
+            return None
+        row = _clean(item)
+        row.setdefault("error", None)
+        row.setdefault("fetched_at", None)
+        return row
+
+    def by_path(self, path):
+        return next((r for r in self.list() if r["path"] == path), None)
+
+    def insert(self, owner, name, url, created_at):
+        remote_id = self.t.next_id("remote")
+        try:
+            self.t.put({"PK": f"REMOTEPATH#{url}", "SK": "UNIQUE", "remote_id": remote_id},
+                       ConditionExpression="attribute_not_exists(PK)")
+        except self.t.table.meta.client.exceptions.ConditionalCheckFailedException:
+            from autosde.github import GitHubError
+            raise GitHubError(f"{owner}/{name} is already added.") from None
+        self.t.put({"PK": f"REMOTE#{remote_id}", "SK": "META", "GSI2PK": "REMOTES", "GSI2SK": f"{owner}/{name}",
+                    "id": remote_id, "owner": owner, "name": name, "url": url, "path": url, "status": "ready",
+                    "created_at": created_at})
+        return remote_id
+
+    def set_path(self, remote_id, url):
+        self.t.update(f"REMOTE#{remote_id}", "META", {"path": url, "url": url, "status": "ready"}, remove=["error"])
+
+    def delete(self, remote_id):
+        item = self.t.get(f"REMOTE#{remote_id}", "META")
+        if item:
+            self.t.delete(f"REMOTEPATH#{item['path']}", "UNIQUE")
+        self.t.delete(f"REMOTE#{remote_id}", "META")

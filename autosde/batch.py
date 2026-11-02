@@ -95,29 +95,59 @@ def estimate_remote(source, sha, settings):
             "estimate": price(incoming, outgoing // 3), "max": price(incoming, outgoing)}
 
 
-class Batches:
-    def __init__(self, db, *, clock=time.time):
-        self.db, self.clock = db, clock
+class SqliteBatchStore:
+    def __init__(self, db):
+        self.db = db
         self.db.executescript(SCHEMA)
 
-    def _all(self, sql, *args):
-        return [dict(row) for row in self.db.execute(sql, args)]
+    def get(self, batch_id):
+        rows = [dict(r) for r in self.db.execute("SELECT * FROM batches WHERE id = ?", (batch_id,))]
+        return rows[0] if rows else None
+
+    def for_repo(self, repo, limit=20):
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM batches WHERE repo = ? ORDER BY created_at DESC LIMIT ?", (str(repo), limit))]
+
+    def insert(self, row):
+        keys = list(row)
+        return self.db.execute(f"INSERT INTO batches({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
+                               [row[k] for k in keys]).lastrowid
+
+    def update(self, batch_id, **fields):
+        self.db.execute(f"UPDATE batches SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                        (*fields.values(), batch_id))
+
+
+class Batches:
+    """`store` is a SQLite connection or a batch store (SQLite or DynamoDB)."""
+
+    def __init__(self, store, *, clock=time.time):
+        import sqlite3
+
+        self.store = SqliteBatchStore(store) if isinstance(store, sqlite3.Connection) else store
+        self.clock = clock
+
+    @staticmethod
+    def _decode(row):
+        row = dict(row)
+        for key in ("commits", "review_ids"):
+            if isinstance(row[key], str):
+                row[key] = json.loads(row[key])
+        row.setdefault("error", None)
+        row.setdefault("finished_at", None)
+        return row
 
     def _row(self, batch_id):
-        rows = self._all("SELECT * FROM batches WHERE id = ?", batch_id)
-        if not rows:
+        row = self.store.get(batch_id)
+        if not row:
             raise BatchError("No such batch.")
-        row = rows[0]
-        row["commits"] = json.loads(row["commits"])
-        row["review_ids"] = json.loads(row["review_ids"])
-        return row
+        return self._decode(row)
 
     def get(self, batch_id):
         return self._row(batch_id)
 
     def for_repo(self, repo):
-        return [self._row(r["id"]) for r in self._all(
-            "SELECT id FROM batches WHERE repo = ? ORDER BY created_at DESC LIMIT 20", str(repo))]
+        return [self._decode(r) for r in self.store.for_repo(str(repo))]
 
     def plan(self, repo, start, end, *, mode, settings, every=1, limit=20, source=None):
         """Choose commits in end..start and estimate them; nothing runs until `run`."""
@@ -154,11 +184,11 @@ class Batches:
             raise BatchError("None of those commits can be reviewed.")
         est = round(sum(c["estimate"] for c in commits), 6)
         cap = round(sum(c["max"] for c in commits), 6)
-        cursor = self.db.execute(
-            "INSERT INTO batches(repo, range_spec, mode, commits, status, est_cost, max_cost, created_at)"
-            " VALUES (?,?,?,?,'planned',?,?,?)",
-            (str(root), f"{end}..{start}", mode, json.dumps(commits), est, cap, self.clock()))
-        return self._row(cursor.lastrowid)
+        batch_id = self.store.insert({
+            "repo": str(root), "range_spec": f"{end}..{start}", "mode": mode, "commits": json.dumps(commits),
+            "status": "planned", "est_cost": est, "max_cost": cap, "spent": 0.0, "done": 0, "failed": 0,
+            "review_ids": "[]", "created_at": self.clock()})
+        return self._row(batch_id)
 
     def start(self, batch_id, review, *, max_cost=None):
         """Approve and run on a background thread. `review(sha)` returns (review id, cost)."""
@@ -168,7 +198,7 @@ class Batches:
         cap = batch["max_cost"] if max_cost is None else float(max_cost)
         if not 0 < cap <= max(batch["max_cost"], 0.000001) * 5:
             raise BatchError("Set a cost cap above zero (up to five times the estimate's maximum).")
-        self.db.execute("UPDATE batches SET status = 'running', max_cost = ? WHERE id = ?", (cap, batch_id))
+        self.store.update(batch_id, status="running", max_cost=cap)
         thread = threading.Thread(target=self.run, args=(batch_id, review), daemon=True)
         thread.start()
         return thread
@@ -191,16 +221,13 @@ class Batches:
                 done += 1
             except Exception:
                 failed += 1  # one bad commit doesn't stop the batch
-            self.db.execute("UPDATE batches SET spent = ?, done = ?, failed = ?, review_ids = ? WHERE id = ?",
-                            (round(spent, 6), done, failed, json.dumps(ids), batch_id))
-        self.db.execute("UPDATE batches SET status = ?, finished_at = ? WHERE id = ?",
-                        (status, self.clock(), batch_id))
+            self.store.update(batch_id, spent=round(spent, 6), done=done, failed=failed, review_ids=json.dumps(ids))
+        self.store.update(batch_id, status=status, finished_at=self.clock())
 
     def cancel(self, batch_id):
         batch = self._row(batch_id)
         if batch["status"] == "planned":
-            self.db.execute("UPDATE batches SET status = 'cancelled', finished_at = ? WHERE id = ?",
-                            (self.clock(), batch_id))
+            self.store.update(batch_id, status="cancelled", finished_at=self.clock())
         elif batch["status"] == "running":  # stops before the next commit
-            self.db.execute("UPDATE batches SET status = 'cancelling' WHERE id = ?", (batch_id,))
+            self.store.update(batch_id, status="cancelling")
         return self._row(batch_id)

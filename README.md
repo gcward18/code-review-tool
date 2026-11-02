@@ -98,7 +98,7 @@ sequenceDiagram
     participant Team as Agent team
     participant Model as OpenAI
 
-    Note over UI,API: Cloud requests carry a Cognito access token; API Gateway validates it
+    Note over UI,API: Cloud requests carry a Cognito access token, which API Gateway validates
     User->>UI: Choose repository and commit range
     UI->>API: Request review plan
     API->>Repo: Resolve exact base and head commits
@@ -106,7 +106,7 @@ sequenceDiagram
     API-->>Worker: Queue plan job with review ID
     API-->>UI: Review ID
     Worker->>Repo: Read files and diffs at saved commits
-    Worker->>Worker: Gitleaks scan; exclude flagged files
+    Worker->>Worker: Gitleaks scan, excluding flagged files
     Worker->>Team: Plan reviewable files
     Team->>Model: Coordinator call with file metadata
     Model-->>Team: Assignments, flags and rationale
@@ -166,8 +166,8 @@ sequenceDiagram
     UI->>S3: POST raw file and signed fields, without Cognito token
     S3-->>UI: Upload accepted
     UI->>API: Complete ticket with Cognito token
-    API->>Store: Read ticket; verify owner, base and expiry
-    API->>S3: HEAD object; verify size, checksum and metadata
+    API->>Store: Read ticket, verify owner, base and expiry
+    API->>S3: HEAD object, verify size, checksum and metadata
     S3-->>API: Verified metadata and version ID
     API->>Store: Atomically register document and pin accepted version
     API-->>Worker: Queue ingest job with ticket ID only
@@ -183,16 +183,16 @@ sequenceDiagram
         Worker->>Worker: Chunk text with configured strategy
         Worker->>Model: Embed chunks
         Model-->>Worker: Vectors and token usage
-        Worker->>Store: Save chunks and vectors; mark document ready
+        Worker->>Store: Save chunks and vectors, mark document ready
     else Extraction or scan fails
-        Worker->>Store: Mark document failed; do not embed
+        Worker->>Store: Mark document failed, skip embedding
     end
     Worker->>S3: Delete accepted temporary object version
     Worker->>Store: Mark upload ticket done
     UI->>API: Poll knowledge base documents
     API->>Store: Read document status
     API-->>UI: Ready or failed
-    Note over S3,Store: Lifecycle expires abandoned uploads; DynamoDB TTL expires tickets
+    Note over S3,Store: Lifecycle expires abandoned uploads, DynamoDB TTL expires tickets
 ```
 
 Repeated completion requests reuse the registered document, and the worker's conditional claim prevents duplicate ingestion. The accepted S3 version is pinned so a later overwrite cannot change the file being processed. Scanned document text, chunks and vectors are retained for retrieval; the raw staging upload is removed after processing. See [RAG details](docs/RAG.md) for chunking and retrieval settings.

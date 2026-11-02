@@ -343,3 +343,8 @@ mark { background: color-mix(in srgb, var(--highlight) 45%, transparent); color:
 form.rename { display: flex; gap: 6px; align-items: center; }
 form.rename input { padding: 4px 8px; }
 .finding .md, .card > .md { margin: 6px 0; }
+
+/* Agents page panels */
+.save-note { margin-right: 4px; white-space: nowrap; }
+.prompt-panel .panel-body { display: flex; flex-direction: column; gap: 8px; }
+.prompt-editor { flex: 1; min-height: 160px; resize: none; }

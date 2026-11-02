@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
+import Workspace, { Panel } from "./Workspace.jsx";
 
 const CORE = ["coordinator", "aggregator", "chat"];
 const FIXED = [...CORE, "general"];
@@ -18,6 +19,7 @@ export default function Agents({ defaultModel, selected = "python", onSelect }) 
   const [draft, setDraft] = useState(null);
   const [status, setStatus] = useState({ kind: "", text: "" });
   const [newName, setNewName] = useState("");
+  const [promptKind, setPromptKind] = useState("coordinator");
   const [models, setModels] = useState({});
   const [custom, setCustom] = useState({});
   const [runs, setRuns] = useState(null);
@@ -93,20 +95,19 @@ export default function Agents({ defaultModel, selected = "python", onSelect }) 
     );
   };
 
-  return (
+  const actions = (
     <>
-      <div className="card sticky">
-        <div className="actions">
-          <h2 className="grow">Agents</h2>
-          <button className="secondary" disabled={!dirty} onClick={() => (setDraft(clone(saved)), setStatus({}))}>Discard</button>
-          <button disabled={!dirty} onClick={save}>Save</button>
-        </div>
-        <p className={`small ${status.kind || "muted"}`}>
-          {status.text || (dirty ? "Unsaved changes." : "Saved in autosde/prompts/. Changes apply to the next review.")}
-        </p>
-      </div>
-
-      <div className="card">
+      <span className={`small save-note ${status.kind || "muted"}`}>
+        {status.text || (dirty ? "Unsaved changes" : "Saved")}
+      </span>
+      <button className="secondary" disabled={!dirty} onClick={() => (setDraft(clone(saved)), setStatus({}))}>Discard</button>
+      <button disabled={!dirty} onClick={save}>Save</button>
+    </>
+  );
+  const prompt = PROMPTS.find(([kind]) => kind === promptKind) || PROMPTS[0];
+  return (
+    <Workspace
+      topLeft={<Panel title="Agent" actions={actions}>
         {!draft.config.agents[selected] && <p className="error small">Agent “{selected}” was not found. Choose an agent below.</p>}
         <div className="actions picker">
           <label className="field grow">
@@ -187,32 +188,23 @@ export default function Agents({ defaultModel, selected = "python", onSelect }) 
                     onChange={(e) => edit((d) => { d.focus[name] = e.target.value; })} />
                 </label>
               )}
-              {core && <p className="small muted">Edit its prompt under System prompts below.</p>}
+              {core && <p className="small muted">Edit its prompt in the System prompts panel.</p>}
             </div>
           );
         })()}
-      </div>
-
-      <details className="card">
-        <summary>Agent runs{runs ? ` (${runs.reduce((n, r) => n + r.runs, 0)})` : ""}</summary>
-        {runs?.length ? (
-          <table>
-            <thead><tr><th>Project</th><th>Role</th><th>Agent</th><th>Runs</th><th>OK</th><th>Failed</th><th>Tokens</th><th>Kept</th></tr></thead>
-            <tbody>
-              {runs.map((r) => (
-                <tr key={r.project + r.role + r.agent}>
-                  <td>{r.project}</td><td>{r.role}</td><td>{r.agent}</td><td>{r.runs}</td>
-                  <td>{r.succeeded}</td><td className={r.failed ? "error" : ""}>{r.failed}</td>
-                  <td>{r.input_tokens}/{r.output_tokens}</td><td>{r.findings_kept}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : <p className="muted small">{runs ? "No agent runs yet." : "Loading…"}</p>}
-      </details>
-
-      <div className="card">
-        <h3>LangSmith</h3>
+      </Panel>}
+      bottomLeft={<Panel title="System prompts" className="prompt-panel">
+        <label className="field">
+          <span className="small muted">Prompt · {prompt[2]}</span>
+          <select value={prompt[0]} onChange={(e) => setPromptKind(e.target.value)}>
+            {PROMPTS.map(([kind, title]) => <option key={kind} value={kind}>{title}</option>)}
+          </select>
+        </label>
+        <textarea className="mono prompt-editor" value={draft.prompts[prompt[0]] || ""}
+          onChange={(e) => edit((d) => { d.prompts[prompt[0]] = e.target.value; })} />
+        <p className="small muted">Saved with Save above, in autosde/prompts/. Changes apply to the next review.</p>
+      </Panel>}
+      topRight={<Panel title="LangSmith tracing">
         <label className="toggle">
           <input type="checkbox" checked={draft.config.langsmith.enabled}
             onChange={(e) => edit((d) => { d.config.langsmith.enabled = e.target.checked; })} />
@@ -242,18 +234,23 @@ export default function Agents({ defaultModel, selected = "python", onSelect }) 
           Traces include each traced agent's full prompt, the reviewed code, and its reply.
           Text that gitleaks flags is withheld.
         </p>
-      </div>
-
-      <div className="card">
-        <h3>System prompts</h3>
-        {PROMPTS.map(([kind, title, hint]) => (
-          <details key={kind} className="prompt">
-            <summary>{title} <span className="small muted">— {hint}</span></summary>
-            <textarea rows={14} className="mono" value={draft.prompts[kind]}
-              onChange={(e) => edit((d) => { d.prompts[kind] = e.target.value; })} />
-          </details>
-        ))}
-      </div>
-    </>
+      </Panel>}
+      bottomRight={<Panel title={`Agent runs${runs ? ` (${runs.reduce((n, r) => n + r.runs, 0)})` : ""}`}>
+        {runs?.length ? (
+          <table>
+            <thead><tr><th>Project</th><th>Role</th><th>Agent</th><th>Runs</th><th>OK</th><th>Failed</th><th>Tokens</th><th>Kept</th></tr></thead>
+            <tbody>
+              {runs.map((r) => (
+                <tr key={r.project + r.role + r.agent}>
+                  <td>{r.project}</td><td>{r.role}</td><td>{r.agent}</td><td>{r.runs}</td>
+                  <td>{r.succeeded}</td><td className={r.failed ? "error" : ""}>{r.failed}</td>
+                  <td>{r.input_tokens}/{r.output_tokens}</td><td>{r.findings_kept}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p className="muted small">{runs ? "No agent runs yet." : "Loading…"}</p>}
+      </Panel>}
+    />
   );
 }

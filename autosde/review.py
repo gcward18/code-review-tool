@@ -28,8 +28,8 @@ class Pending:
 
 def retriever_for(store, model, scan):
     """Hybrid knowledge base search, embedding queries with the review's model client."""
-    if not hasattr(model, "embed"):
-        return None
+    if not hasattr(model, "embed") or not hasattr(store, "db"):
+        return None  # DynamoDB knowledge search arrives with the knowledge backend
     knowledge = Knowledge(store.db, embed=model.embed, scan=scan)
     return lambda kb_ids, query: knowledge.search(kb_ids, query)
 

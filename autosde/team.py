@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -272,10 +273,15 @@ class Team:
         changed = "\n".join(line[1:] for f in files for line in f.diff.splitlines()
                             if line[:1] in "+-" and not line.startswith(("+++", "---")))
         query = " ".join(f.path for f in files) + "\n" + changed[:4000]
+        started = time.time()
         try:
-            return context_block(self.retriever(kb_ids, query))
+            results = self.retriever(kb_ids, query)
         except Exception:
             return ""  # retrieval never blocks a review
+        hook = getattr(self.model, "trace_retrieval", None)  # LangSmith, when tracing is on
+        if callable(hook):
+            hook(agent, query, results, started, time.time())
+        return context_block(results)
 
     def _review(self, agent, assignment, by_path, result):
         files = [by_path[p] for p in assignment["files"]]

@@ -79,6 +79,47 @@ class TracingTests(unittest.TestCase):
                        settings=self.settings, scan=scan)
         return fake.requests
 
+    def test_knowledge_searches_appear_as_retriever_runs_with_documents(self):
+        from autosde.knowledge import Knowledge
+        from autosde.llm import ScriptedModel as Model
+
+        kb = Knowledge(self.store.db, embed=Model({}).embed, scan=lambda text: [])
+        base = kb.create("rules")
+        guide = b"# Totals\n\nAlways accumulate prices with += in loops; assigning keeps the last price."
+        doc = kb.add_document(base["id"], "rules.md", guide)
+        kb.ingest(doc, guide)
+        agents.save_config({"langsmith": {"enabled": True, "project": "team-tests"},
+                            "agents": {"python": {"knowledge": [base["id"]]}}})
+        fake = FakeLangSmith()
+        real = tracing.traced
+        traced = lambda model, **kw: real(model, environ={"LANGSMITH_API_KEY": KEY}, opener=fake, **kw)
+        model = Model({"coordinator": [PLAN], "python": [findings(FINDING)], "aggregator": [verdict()],
+                       "chat": [{"answer": "Use +=. [1]"}]})
+        with patch.object(tracing, "traced", traced):
+            run_review(self.repo, "HEAD~1..HEAD", store=self.store, model=model, settings=self.settings,
+                       scan=lambda text: [])
+        posts = [b for m, _, _, b in fake.requests if m == "POST"]
+        search = next(b for b in posts if b["run_type"] == "retriever")
+        self.assertEqual(search["name"], "python knowledge search")
+        self.assertEqual(search["parent_run_id"], posts[0]["id"])
+        document = search["outputs"]["documents"][0]
+        self.assertIn("accumulate prices", document["page_content"])
+        self.assertEqual((document["metadata"]["source"], document["metadata"]["rank"]), ("rules/rules.md", 1))
+        self.assertIn("calculator.py", search["inputs"]["query"])
+
+        from autosde import chat
+        agents.save_config({"langsmith": {"enabled": True, "project": "team-tests"},
+                            "agents": {"chat": {"knowledge": [base["id"]]}}})
+        fake.requests.clear()
+        project = self.store.projects()[0]
+        with patch.object(tracing, "traced", traced):
+            chat.ask(self.store, model, project, "How should totals add up?", scan=lambda text: [])
+        names = [(b["run_type"], b["name"]) for m, _, _, b in fake.requests if m == "POST"]
+        self.assertEqual(names, [("chain", "chat · calculator"), ("retriever", "chat knowledge search"),
+                                 ("llm", "chat")])
+        patched = [b for m, _, _, b in fake.requests if m == "PATCH"][0]
+        self.assertEqual(patched["outputs"]["answer"], "Use +=. [1]")
+
     def test_review_is_one_trace_with_full_content_per_traced_agent(self):
         requests = self.review()
         posts = [body for method, _, _, body in requests if method == "POST"]

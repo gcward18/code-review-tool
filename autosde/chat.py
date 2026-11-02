@@ -5,7 +5,9 @@ quote) plus the recent conversation. The whole outbound prompt is gitleaks-scann
 """
 
 import json
+import time
 
+from autosde import tracing
 from autosde.agents import load_config, read_prompt
 from autosde.knowledge import Knowledge
 
@@ -71,10 +73,17 @@ def ask(store, model, project, question, *, scan, config=None, repositories=None
         if project else
         {"scope": "all projects", "projects": _all_projects(store, repositories or [])}
     )
+    # One LangSmith trace per question when tracing is on: the knowledge search and the reply.
+    model = tracing.traced(model, review_id=None, scan=scan, config=config,
+                           name=f"chat · {project['name'] if project else 'all projects'}")
     kb_ids = config["agents"].get("chat", {}).get("knowledge") or []
     if kb_ids and hasattr(model, "embed"):
         try:
+            started = time.time()
             found = Knowledge(store.db, embed=model.embed, scan=scan).search(kb_ids, question)
+            hook = getattr(model, "trace_retrieval", None)
+            if callable(hook):
+                hook("chat", question, found, started, time.time())
             context["reference"] = [
                 {"n": n, "source": f"{r['knowledge_base']}/{r['document']}",
                  "heading": r["heading"], "text": r["text"]} for n, r in enumerate(found, 1)]
@@ -91,11 +100,14 @@ def ask(store, model, project, question, *, scan, config=None, repositories=None
     reply = model.complete(role="chat", system=read_prompt("chat"), prompt=payload,
                            schema=ANSWER_SCHEMA, max_output_tokens=2000, model=override)
     if not reply.ok:
+        tracing.finish(model, {"status": "failed"})
         raise ChatError(f"The chat agent failed ({reply.error}).")
     try:
         answer = json.loads(reply.text)["answer"]
     except (ValueError, KeyError, TypeError):
+        tracing.finish(model, {"status": "failed"})
         raise ChatError("The chat agent replied in an unexpected format.") from None
+    tracing.finish(model, {"question": question, "answer": answer})
     used = override or getattr(model, "model", None)
     store.add_chat(key, "user", question)
     store.add_chat(key, "assistant", answer, model=used,

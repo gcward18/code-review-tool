@@ -134,6 +134,26 @@ class Tracer:
                                    "agent": agent}},
         })
 
+    def retrieval(self, root, *, agent, query, results, started, ended):
+        """A `retriever` child run: LangSmith shows its outputs as a list of documents."""
+        run_id = str(uuid.uuid4())
+        documents = [{
+            "type": "Document",
+            "page_content": self._clean(r["text"]),
+            "metadata": {"source": f"{r['knowledge_base']}/{r['document']}", "heading": r["heading"],
+                         "rank": n, "score": r.get("score"), "vector": r.get("vector"),
+                         "keyword_match": r.get("keyword"), "tokens": r.get("tokens")},
+        } for n, r in enumerate(results, 1)]
+        self._send("POST", "/runs", {
+            "id": run_id, "trace_id": root["id"], "parent_run_id": root["id"],
+            "dotted_order": root["order"] + "." + _order(started, run_id),
+            "name": f"{agent} knowledge search", "run_type": "retriever",
+            "start_time": _stamp(started).isoformat(), "end_time": _stamp(ended).isoformat(),
+            "inputs": {"query": self._clean(query)}, "outputs": {"documents": documents},
+            "session_name": self.project, "tags": ["autosde", agent, "retrieval"],
+            "extra": {"metadata": {"agent": agent, "results": len(documents)}},
+        })
+
     def finish(self, root, outputs):
         self._send("PATCH", f"/runs/{root['id']}",
                    {"end_time": _stamp(time.time()).isoformat(), "outputs": outputs})
@@ -163,6 +183,14 @@ class TracedModel:
             except Exception:
                 pass
         return reply
+
+    def trace_retrieval(self, agent, query, results, started, ended):
+        if self.config["agents"].get(agent, {}).get("trace", True):
+            try:
+                self.tracer.retrieval(self.root, agent=agent, query=query, results=results,
+                                      started=started, ended=ended)
+            except Exception:
+                pass
 
     def finish(self, outputs):
         try:

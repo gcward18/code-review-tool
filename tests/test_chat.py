@@ -31,6 +31,8 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(messages[-1]["content"], "Line 4.")
         sent = json.loads(model.calls[1]["prompt"])
         self.assertEqual(sent["reviews"][0]["findings"][0]["title"], "Total is overwritten")
+        self.assertEqual(sent["reviews"][0]["review"], 1)
+        self.assertNotIn("id", sent["reviews"][0])  # the model sees review numbers, not ids
         self.assertEqual(sent["conversation"][0]["content"], "What was found?")
         self.assertIn("project historian", model.calls[0]["system"])
 
@@ -65,6 +67,20 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(self.store.chat(self.project["id"]), [])  # separate from project chats
         self.store.clear_chat(None)
         self.assertEqual(self.store.chat(None), [])
+
+    def test_review_numbers_count_per_project_by_run_time(self):
+        import time
+
+        other = self.store.project("/elsewhere/other", "other")
+        changes = type("C", (), {"range_spec": "a..b", "base": "a", "head": "b", "files": []})()
+        for _ in range(2):
+            self.store.start_review(other, changes, "m")
+            time.sleep(0.01)
+        self.store.start_review(self.project["id"], changes, "m")
+        numbers = {(r["project"], r["number"]) for r in self.store.reviews()}
+        self.assertEqual(numbers, {("calculator", 1), ("calculator", 2), ("other", 1), ("other", 2)})
+        newest = self.store.reviews(self.project["id"])[0]
+        self.assertEqual(self.store.review(newest["id"])["number"], 2)
 
 
 if __name__ == "__main__":

@@ -98,6 +98,11 @@ CREATE INDEX IF NOT EXISTS findings_review ON findings(review_id);
 """
 
 
+# A review's position within its project, by when it ran (1 = the project's first review).
+NUMBER = ("(SELECT COUNT(*) FROM reviews n WHERE n.project_id = r.project_id AND"
+          " (n.started_at < r.started_at OR (n.started_at = r.started_at AND n.id <= r.id))) AS number")
+
+
 class Store:
     def __init__(self, path):
         path = Path(path)
@@ -240,8 +245,8 @@ class Store:
     def history(self, project_id, *, limit=30):
         """Reviews with kept and rejected findings, newest first: what the chat agent knows."""
         reviews = self._all(
-            "SELECT id, range_spec, status, summary, limitations, started_at FROM reviews"
-            " WHERE project_id = ? ORDER BY started_at DESC LIMIT ?", project_id, limit)
+            f"SELECT r.id, {NUMBER}, r.range_spec, r.status, r.summary, r.limitations, r.started_at"
+            " FROM reviews r WHERE r.project_id = ? ORDER BY r.started_at DESC LIMIT ?", project_id, limit)
         for review in reviews:
             review["findings"] = self._all(
                 "SELECT file, start_line, end_line, severity, category, title, description,"
@@ -285,7 +290,7 @@ class Store:
     def reviews(self, project_id=None, limit=50):
         where, args = ("WHERE r.project_id = ?", (project_id,)) if project_id else ("", ())
         return self._all(
-            "SELECT r.*, p.name AS project, p.path AS project_path,"
+            f"SELECT r.*, {NUMBER}, p.name AS project, p.path AS project_path,"
             " (SELECT COUNT(*) FROM findings f WHERE f.review_id = r.id AND f.kept) AS findings,"
             " (SELECT GROUP_CONCAT(DISTINCT a.agent) FROM agent_runs a"
             "   WHERE a.review_id = r.id AND a.role = 'specialist') AS agents"
@@ -317,7 +322,7 @@ class Store:
 
     def reviews_by_id(self, review_id):
         return self._all(
-            "SELECT r.*, p.name AS project, p.path AS project_path FROM reviews r"
+            f"SELECT r.*, {NUMBER}, p.name AS project, p.path AS project_path FROM reviews r"
             " JOIN projects p ON p.id = r.project_id WHERE r.id = ?",
             review_id,
         )

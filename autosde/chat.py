@@ -25,7 +25,9 @@ class ChatError(RuntimeError):
 
 def _history(store, project_id):
     """Newest reviews first, dropping the oldest until the history fits."""
-    reviews = store.history(project_id)
+    # Show the model the per-project review number people see, never the database id.
+    reviews = [{"review": r.pop("number"), **{k: v for k, v in r.items() if k != "id"}}
+               for r in store.history(project_id)]
     while reviews and len(json.dumps(reviews)) > MAX_HISTORY_CHARS:
         reviews.pop()
     return reviews
@@ -40,7 +42,7 @@ def _all_projects(store, repositories):
         known = reviewed.get(repo["path"])
         if known:
             entry["reviews"] = [
-                {"id": r["id"], "range": r["range_spec"], "status": r["status"],
+                {"review": r["number"], "range": r["range_spec"], "status": r["status"],
                  "summary": r["summary"],
                  "kept_findings": [f"{f['file']}:{f['start_line']} {f['severity']} {f['title']}"
                                    for f in r["findings"] if f["kept"]]}

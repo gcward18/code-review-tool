@@ -137,6 +137,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(review["range_spec"], f"{base}..HEAD")
         with urllib.request.urlopen(f"{self.url}/api/reviews/{review_id}.sarif", timeout=10) as r:
             self.assertEqual(json.loads(r.read())["version"], "2.1.0")
+            self.assertIn('filename="calculator-review-1.sarif"', r.headers["Content-Disposition"])
+        self.assertEqual(review["number"], 1)  # first review of the project, whatever its id
         self.assertEqual(self.get("/api/projects")[0]["name"], "calculator")
         project = self.get("/api/projects/1")
         self.assertIn("coordinator", [a["agent"] for a in project["agents"]])

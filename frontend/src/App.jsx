@@ -121,9 +121,9 @@ function Settings({ theme, setTheme, prefs, setPrefs, onRescan }) {
       <label className="toggle setting">
         <input type="checkbox" checked={!!prefs.showAgents}
           onChange={(e) => setPrefs({ showAgents: e.target.checked })} />
-        Show agent runs on project and review pages
+        Show agent details (agent columns, specialists and agent runs)
       </label>
-      <p className="small muted">Off: agent details appear only on the Agents page.</p>
+      <p className="small muted">Off: agents appear only on the Agents page. On: reviews tables, plans, findings and project pages show which agents ran.</p>
       <label className="toggle setting">
         <input type="checkbox" checked={prefs.showBlocked}
           onChange={(e) => setPrefs({ showBlocked: e.target.checked })} />
@@ -244,7 +244,7 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
       topLeft={<Panel title={`New review · ${repo.name}`}>{picker}</Panel>}
       bottomLeft={<Chat projectId={repo.project_id} />}
       topRight={<Panel title={`Reviews${project ? ` (${project.reviews.length})` : ""}`}>
-        {project ? <ReviewTable reviews={project.reviews} onOpen={onOpen} /> : <p className="muted">Loading…</p>}
+        {project ? <ReviewTable reviews={project.reviews} onOpen={onOpen} showAgents={showAgents} /> : <p className="muted">Loading…</p>}
       </Panel>}
       bottomRight={showAgents && <Panel title="Agents that ran">
         {project ? <AgentsTable agents={project.agents} /> : <p className="muted">Loading…</p>}
@@ -255,7 +255,7 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
 
 // --- review -------------------------------------------------------------------
 
-function Plan({ review, onDecided }) {
+function Plan({ review, onDecided, showAgents }) {
   const reviewable = review.files.filter((f) => f.agent);
   const [chosen, setChosen] = useState(() => new Set(review.proposed));
   const [estimate, setEstimate] = useState(review.estimate);
@@ -291,7 +291,7 @@ function Plan({ review, onDecided }) {
           <tr>
             <th></th>
             <th>File</th>
-            <th>Specialist</th>
+            {showAgents && <th>Specialist</th>}
             <th>Note</th>
           </tr>
         </thead>
@@ -302,7 +302,7 @@ function Plan({ review, onDecided }) {
                 <input type="checkbox" checked={chosen.has(f.path)} onChange={() => toggle(f.path)} />
               </td>
               <td><code>{f.path}</code></td>
-              <td>{f.agent}</td>
+              {showAgents && <td>{f.agent}</td>}
               <td className="small">{f.flag && <span className="badge warn">flagged: {f.flag}</span>}</td>
             </tr>
           ))}
@@ -312,7 +312,7 @@ function Plan({ review, onDecided }) {
               <tr key={f.path} className="muted">
                 <td></td>
                 <td><code>{f.path}</code></td>
-                <td>–</td>
+                {showAgents && <td>–</td>}
                 <td className="small">not sendable: {f.skipped}</td>
               </tr>
             ))}
@@ -345,7 +345,7 @@ function Review({ id, onProject, onContext, showAgents }) {
   const load = useCallback(() => api.review(id).then((r) => {
     if (!active.current) return;
     setReview(r);
-    onContext({ repo: r.project_path });
+    onContext({ repo: r.project_path, number: r.number });
   }).catch((e) => active.current && setError(e.message)), [id, onContext]);
 
   useEffect(() => {
@@ -367,7 +367,7 @@ function Review({ id, onProject, onContext, showAgents }) {
     <>
       <div className="card">
         <h2>
-          Review #{review.id} ·{" "}
+          Review #{review.number} ·{" "}
           <a href={routeHref({ kind: "project", id: review.project_id })}>
             {review.project}
           </a>
@@ -384,13 +384,13 @@ function Review({ id, onProject, onContext, showAgents }) {
           <p className="muted">{review.status === "planning" ? "Planning…" : "The team is reviewing…"}</p>
         )}
       </div>
-      {review.status === "awaiting_approval" && <Plan review={review} onDecided={load} />}
+      {review.status === "awaiting_approval" && <Plan review={review} onDecided={load} showAgents={showAgents} />}
       {kept.length > 0 && <h3>Findings ({kept.length})</h3>}
       {kept.map((f) => (
         <div className="card finding" key={f.id}>
           <p>
             <span className={`badge sev-${f.severity}`}>{f.severity}</span> <b><MarkdownInline text={f.title} /></b>{" "}
-            <span className="muted">· {f.agent}</span>
+            {showAgents && <span className="muted">· {f.agent}</span>}
           </p>
           <p><code>{f.file}:{f.start_line}{f.end_line !== f.start_line ? `–${f.end_line}` : ""}</code></p>
           <Markdown text={f.description} />
@@ -445,23 +445,24 @@ function Review({ id, onProject, onContext, showAgents }) {
 
 // --- lists --------------------------------------------------------------------
 
-function ReviewTable({ reviews, onOpen }) {
+function ReviewTable({ reviews, onOpen, showAgents }) {
   if (!reviews.length) return <p className="muted">No reviews yet.</p>;
   return (
     <table>
       <thead>
-        <tr><th>#</th><th>Project</th><th>Range</th><th>Started</th><th>Status</th><th>Findings</th><th>Agents</th><th>Cost</th></tr>
+        <tr><th>#</th><th>Project</th><th>Range</th><th>Started</th><th>Status</th><th>Findings</th>{showAgents && <th>Agents</th>}<th>Cost</th></tr>
       </thead>
       <tbody>
         {reviews.map((r) => (
           <tr key={r.id} className="clickable" onClick={() => onOpen(r.id)}>
-            <td><a href={routeHref({ kind: "review", id: r.id })} onClick={(e) => e.stopPropagation()}>{r.id}</a></td>
+            <td><a href={routeHref({ kind: "review", id: r.id })} onClick={(e) => e.stopPropagation()}
+              title={`Review ${r.number} of ${r.project}, by when it ran`}>{r.number}</a></td>
             <td>{r.project}</td>
             <td><code>{r.base_sha.slice(0, 7)}..{r.head_sha.slice(0, 7)}</code></td>
             <td className="small">{ago(r.started_at)}</td>
             <td><span className={`badge status-${r.status}`}>{r.status.replace("_", " ")}</span></td>
             <td>{r.findings}</td>
-            <td className="small">{(r.agents || "").replaceAll(",", ", ")}</td>
+            {showAgents && <td className="small">{(r.agents || "").replaceAll(",", ", ")}</td>}
             <td>{money(r.cost_usd)}</td>
           </tr>
         ))}
@@ -470,7 +471,7 @@ function ReviewTable({ reviews, onOpen }) {
   );
 }
 
-function Home({ onOpen, onProject }) {
+function Home({ onOpen, onProject, showAgents }) {
   const [projects, setProjects] = useState([]);
   const [reviews, setReviews] = useState([]);
   useEffect(() => {
@@ -493,7 +494,7 @@ function Home({ onOpen, onProject }) {
     <Workspace
       topLeft={<Chat />}
       topRight={<Panel title={`Projects (${projects.length})`}>{projectTable}</Panel>}
-      bottomRight={<Panel title="Recent reviews"><ReviewTable reviews={reviews} onOpen={onOpen} /></Panel>}
+      bottomRight={<Panel title="Recent reviews"><ReviewTable reviews={reviews} onOpen={onOpen} showAgents={showAgents} /></Panel>}
     />
   );
 }
@@ -622,7 +623,7 @@ function Crumbs({ view, canGoBack, onBack, go }) {
   if (view.kind === "home") return null;
   const trail = [];
   if (view.repo) trail.push({ label: view.repo.split("/").pop(), to: { kind: "repo", repo: view.repo } });
-  if (view.kind === "review") trail.push({ label: `Review #${view.id}` });
+  if (view.kind === "review") trail.push({ label: view.number ? `Review #${view.number}` : "Review" });
   if (view.kind === "agents") trail.push({ label: "Agents" });
   if (view.kind === "settings") trail.push({ label: "Settings" });
   if (view.kind === "knowledge") trail.push({ label: "Knowledge" });
@@ -686,7 +687,8 @@ export default function App() {
         {error && <div className="card error">{error}</div>}
         {view.kind === "not-found" && <div className="card error">Page not found. Use Home to continue.</div>}
         {session && view.kind === "home" && (
-          <Home onOpen={(id) => go({ kind: "review", id })} onProject={(id) => go({ kind: "project", id })} />
+          <Home onOpen={(id) => go({ kind: "review", id })} onProject={(id) => go({ kind: "project", id })}
+            showAgents={prefs.showAgents} />
         )}
         {view.kind === "repo" && (
           <RangePicker key={view.repo} repoPath={view.repo}

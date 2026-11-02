@@ -520,7 +520,9 @@ def handler_for(app):
                     review = app.review(int(m[1]))
                     return self._send(200, report.as_json(report.sarif(review)).encode(),
                                       "application/json",
-                                      {"Content-Disposition": f'attachment; filename="review-{m[1]}.sarif"'})
+                                      {"Content-Disposition": "attachment; filename="
+                                       f'"{re.sub(r"[^A-Za-z0-9._-]", "_", review["project"])}'
+                                       f'-review-{review["number"]}.sarif"'})
                 if m := re.fullmatch(r"/api/reviews/(\d+)", path):
                     return self._json(200, app.review(int(m[1])))
                 raise ApiError(404, "Not found.")

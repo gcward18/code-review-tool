@@ -1,5 +1,6 @@
 """Read a committed range from a local repository. Uncommitted edits are ignored."""
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -192,3 +193,71 @@ def capture(path, spec, *, max_file_bytes=64_000, max_total_bytes=400_000):
                 item.skipped = "not UTF-8 text"
         changes.files.append(item)
     return changes
+
+
+def changed_files(repo, base, head):
+    """Files changed in base..head with line counts, for the review's file list."""
+    numstat = _git(repo, "diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z", "--find-renames",
+                   base, head).decode("utf-8", "replace")
+    statuses = _git(repo, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames",
+                    base, head).decode("utf-8", "replace").split("\0")
+    kinds, index = {}, 0
+    while index < len(statuses) - 1:
+        code = statuses[index][:1]
+        if code == "R":
+            kinds[statuses[index + 2]] = ("R", statuses[index + 1])
+            index += 3
+        else:
+            kinds[statuses[index + 1]] = (code, None)
+            index += 2
+    files, parts, index = [], numstat.split("\0"), 0
+    while index < len(parts) - 1:
+        added, removed, path = (parts[index].split("\t") + ["", "", ""])[:3]
+        if path == "":  # a rename: "added\tremoved\t" then old and new paths
+            path, index = parts[index + 2], index + 3
+        else:
+            index += 1
+        status, old = kinds.get(path, ("M", None))
+        files.append({"path": path, "status": status, "old_path": old,
+                      "added": None if added == "-" else int(added or 0),
+                      "removed": None if removed == "-" else int(removed or 0),
+                      "binary": added == "-"})
+    return files
+
+
+def file_diff(repo, base, head, path, *, max_lines=20_000):
+    """The whole file as diff rows (context, +, -) with old and new line numbers.
+
+    The viewer folds unchanged runs itself, so it can show any amount of context."""
+    files = {f["path"]: f for f in changed_files(repo, base, head)}
+    if path not in files:
+        raise GitError("That file isn't part of this review.")
+    if files[path]["binary"]:
+        return {"binary": True, "rows": []}
+    old = files[path]["old_path"] or path
+    raw = _git(repo, "diff", "--no-ext-diff", "--no-textconv", "-U1000000", "--find-renames",
+               base, head, "--", old, path).decode("utf-8", "replace")
+    rows, old_no, new_no, started = [], 0, 0, False
+    for line in raw.splitlines():
+        if line.startswith("@@"):
+            match = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+            old_no, new_no, started = int(match[1]) - 1, int(match[2]) - 1, True
+            continue
+        if not started:
+            continue  # diff --git, index, ---/+++ and rename headers
+        kind = line[:1]
+        if kind == "\\":
+            continue  # "\ No newline at end of file"
+        if kind == "+":
+            new_no += 1
+            rows.append({"t": "+", "o": None, "n": new_no, "s": line[1:]})
+        elif kind == "-":
+            old_no += 1
+            rows.append({"t": "-", "o": old_no, "n": None, "s": line[1:]})
+        else:
+            old_no += 1
+            new_no += 1
+            rows.append({"t": " ", "o": old_no, "n": new_no, "s": line[1:]})
+        if len(rows) >= max_lines:
+            return {"binary": False, "rows": rows, "truncated": True}
+    return {"binary": False, "rows": rows, "truncated": False}

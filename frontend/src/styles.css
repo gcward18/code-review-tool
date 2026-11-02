@@ -348,3 +348,39 @@ form.rename input { padding: 4px 8px; }
 .save-note { margin-right: 4px; white-space: nowrap; }
 .prompt-panel .panel-body { display: flex; flex-direction: column; gap: 8px; }
 .prompt-editor { flex: 1; min-height: 160px; resize: none; }
+
+/* GitHub repos and history batches */
+.add-gh-btn { width: calc(100% - 8px); margin: 0 4px 12px; font-size: 12.5px; }
+.add-github { margin: 0 4px 12px; }
+.gh-error { margin: 2px 8px 6px; }
+.inline-tabs { border-bottom: 0; margin: 0; align-items: center; gap: 2px; }
+.batch { margin-top: 6px; }
+.batch-card { margin-top: 8px; }
+.batch-card .actions { align-items: center; }
+.field.cap input { width: 130px; }
+.progress { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin: 8px 0; }
+.progress span { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.batch-commits { margin-top: 8px; }
+.batch-commits td { vertical-align: top; }
+.batch-history { margin-top: 10px; }
+.status-running, .status-cancelling { background: var(--accent-soft); color: var(--accent); }
+.status-budget, .status-cancelled { background: var(--surface); color: var(--muted); }
+
+/* Changed files and diffs */
+.diffstat { font: 12px var(--font-code); white-space: nowrap; }
+.diffstat .plus { color: var(--ok); } .diffstat .minus { color: var(--error); }
+.changed-files .file { border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; overflow: hidden; }
+.file-head { display: flex; gap: 8px; align-items: center; width: 100%; background: var(--surface); border: 0;
+  border-radius: 0; color: var(--text); font: inherit; font-weight: 400; padding: 7px 10px; text-align: left; cursor: pointer; }
+.file-head code { background: none; color: var(--text); padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-head:hover { background: var(--accent-soft); }
+.diff { overflow-x: auto; max-height: 70vh; overflow-y: auto; }
+.diff table { display: table; border-collapse: collapse; width: 100%; font: 12.5px/1.55 var(--font-code); }
+.diff td { padding: 0 8px; border: 0; vertical-align: top; }
+.diff .ln { width: 1%; text-align: right; color: var(--muted); user-select: none; white-space: nowrap; }
+.diff .sign { width: 1%; color: var(--muted); user-select: none; }
+.diff .code { white-space: pre; }
+.diff tr.add td { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.diff tr.del td { background: color-mix(in srgb, var(--error) 14%, transparent); }
+.diff tr.fold td { background: var(--accent-soft); padding: 3px 10px; font-family: var(--font-body); font-size: 12px; }
+.diff tr.fold button { margin-left: 12px; font-size: 12px; }

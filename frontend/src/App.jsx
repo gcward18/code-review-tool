@@ -4,6 +4,8 @@ import { routeHref } from "./routes.js";
 import { api } from "./api.js";
 import Agents from "./Agents.jsx";
 import Knowledge from "./Knowledge.jsx";
+import BatchPanel from "./Batch.jsx";
+import ChangedFiles from "./Diff.jsx";
 import Markdown, { MarkdownInline } from "./Markdown.jsx";
 import Workspace, { Panel } from "./Workspace.jsx";
 
@@ -74,14 +76,85 @@ function ProjectList({ title, items, selected, onSelect, blocked }) {
   );
 }
 
+function AddGitHub({ onAdded, onCancel }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      onAdded(await api.addRemote(text.trim()));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="card-inset add-github" onSubmit={submit}>
+      <label className="field">
+        <span className="small">GitHub repository</span>
+        <input autoFocus value={text} placeholder="owner/name or https://github.com/owner/name" onChange={(e) => setText(e.target.value)} />
+      </label>
+      <span className="small muted">Cloned with your own git credentials, so private repos work if `git clone` does.</span>
+      {error && <p className="error small">{error}</p>}
+      <div className="actions">
+        <button type="submit" disabled={busy || !text.trim()}>{busy ? "Adding…" : "Clone"}</button>
+        <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function GitHubList({ items, selected, onSelect, onChanged }) {
+  return (
+    <section className="group">
+      <h3>GitHub <span className="count">{items.length}</span></h3>
+      <ul className="tree">
+        {items.map((r) => {
+          const ready = r.status === "ready" || r.status === "fetching";
+          return (
+            <li key={r.path}>
+              <div className={`node ${selected === r.path ? "selected" : ""} ${ready ? "" : "blocked"}`}
+                title={r.error || r.path} onClick={ready ? () => onSelect(r.path) : undefined}>
+                <span className="name">⑂ {r.name}</span>
+                {r.status === "cloning" && <span className="count">cloning…</span>}
+                {r.status === "fetching" && <span className="count">fetching…</span>}
+                {r.status === "failed" && (
+                  <button className="secondary small-btn" onClick={async (e) => {
+                    e.stopPropagation();
+                    await api.retryRemote(r.remote_id);
+                    onChanged();
+                  }}>Retry</button>
+                )}
+                {r.reviews > 0 && <span className="count">{r.reviews}</span>}
+              </div>
+              {r.status === "failed" && r.error && <p className="error small gh-error">{r.error}</p>}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function Workspaces({ selected, onSelect, showBlocked, refresh }) {
   const [query, setQuery] = useState("");
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
-    setData(null);
+    if (!tick) setData(null);
     api.workspaces().then(setData).catch((e) => setError(e.message));
-  }, [refresh]);
+  }, [refresh, tick]);
+  useEffect(() => {  // follow clones and fetches in progress
+    if (!data?.github?.some((r) => ["cloning", "fetching"].includes(r.status))) return undefined;
+    const timer = setTimeout(() => setTick((t) => t + 1), 2000);
+    return () => clearTimeout(timer);
+  }, [data]);
   const q = query.trim().toLowerCase();
   const match = (r) => !q || r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q);
   const pick = (list) => (data?.[list] || []).filter(match);
@@ -93,8 +166,17 @@ function Workspaces({ selected, onSelect, showBlocked, refresh }) {
         onChange={(e) => setQuery(e.target.value)} aria-label="Search projects" />
       {error && <p className="error small">{error}</p>}
       {!data && !error && <p className="muted small">Finding repositories…</p>}
+      {adding ? (
+        <AddGitHub onAdded={() => (setAdding(false), setTick((t) => t + 1))} onCancel={() => setAdding(false)} />
+      ) : (
+        <button className="secondary add-gh-btn" onClick={() => setAdding(true)}>+ Add GitHub repository</button>
+      )}
       {data && (
         <>
+          {data.github?.length > 0 && (
+            <GitHubList items={data.github.filter(match)} selected={selected} onSelect={onSelect}
+              onChanged={() => setTick((t) => t + 1)} />
+          )}
           <ProjectList title="Recent" items={pick("recent")} selected={selected} onSelect={onSelect} />
           <ProjectList title="Available" items={pick("available")} selected={selected} onSelect={onSelect} />
           {showBlocked && <ProjectList title="Blocked" items={pick("blocked")} blocked />}
@@ -153,9 +235,26 @@ function Options({ items }) {
 function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
   const [repo, setRepo] = useState(null);
   const [project, setProject] = useState(null);
+  const [tab, setTab] = useState("single");
+  const [remote, setRemote] = useState(null);
+  const [version, setVersion] = useState(0);  // bumps when a batch finishes a review
+  const [fetched, setFetched] = useState(0);  // bumps when a GitHub fetch finishes
   useEffect(() => {
     if (repo?.project_id) api.project(repo.project_id).then(setProject);
-  }, [repo?.project_id]);
+  }, [repo?.project_id, version]);
+  useEffect(() => {
+    api.remotes().then((list) => setRemote(list.find((r) => r.path === repoPath) || null)).catch(() => {});
+  }, [repoPath]);
+  useEffect(() => {  // follow a fetch
+    if (remote?.status !== "fetching") return undefined;
+    const timer = setTimeout(async () => {
+      const next = (await api.remotes()).find((r) => r.id === remote.id);
+      setRemote(next || null);
+      if (next?.status === "ready") setFetched((f) => f + 1);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [remote]);
+  const refreshRepo = () => api.repo(repoPath).then((data) => setRepo((r) => ({ ...data, _from: r?._from })));
   const [from, setFrom] = useState("");
   const [older, setOlder] = useState(null);
   const [to, setTo] = useState("");
@@ -175,7 +274,7 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
         setFrom(data.default_from);
       })
       .catch((e) => setError(e.message));
-  }, [repoPath]);
+  }, [repoPath, fetched]);
 
   useEffect(() => {
     setOlder(null);
@@ -225,23 +324,45 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
             {older && older.length > 0 && <Options items={older} />}
           </select>
         </label>
-        <button onClick={start} disabled={!from || !to || busy}>
-          {busy ? "Planning…" : "Plan review"}
-        </button>
+        {tab === "single" && (
+          <button onClick={start} disabled={!from || !to || busy}>
+            {busy ? "Planning…" : "Plan review"}
+          </button>
+        )}
       </div>
-      <p className="muted small">
-        Reviews every commit after <b>To</b> up to and including <b>From</b>. The coordinator plans
-        first (paths only); you approve before any code is sent.
-      </p>
+      {tab === "single" ? (
+        <p className="muted small">
+          Reviews every commit after <b>To</b> up to and including <b>From</b> as one change. The coordinator plans
+          first (paths only); you approve before any code is sent.
+        </p>
+      ) : (
+        <BatchPanel repoPath={repoPath} from={from} to={to}
+          onProgress={() => (setVersion((v) => v + 1), repo.project_id ? null : refreshRepo())} />
+      )}
       {error && <p className="error">{error}</p>}
     </>
   );
+  const tabs = (
+    <div className="tabs inline-tabs" role="tablist">
+      {[["single", "Single range"], ["batch", "History batch"]].map(([key, label]) => (
+        <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? "tab active" : "tab"}
+          onClick={() => setTab(key)}>{label}</button>
+      ))}
+      {remote && (
+        <button className="secondary small-btn" disabled={remote.status === "fetching"}
+          title={remote.fetched_at ? `Last fetched ${new Date(remote.fetched_at * 1000).toLocaleString()}` : ""}
+          onClick={async () => setRemote({ ...remote, ...(await api.fetchRemote(remote.id)) })}>
+          {remote.status === "fetching" ? "Fetching…" : "⟳ Fetch latest"}
+        </button>
+      )}
+    </div>
+  );
   if (!repo.project_id) {
-    return <div className="card"><h2>{repo.name}</h2>{picker}</div>;
+    return <div className="card"><div className="actions title"><h2 className="grow">{repo.name}</h2>{tabs}</div>{picker}</div>;
   }
   return (
     <Workspace
-      topLeft={<Panel title={`New review · ${repo.name}`}>{picker}</Panel>}
+      topLeft={<Panel title={repo.name} actions={tabs}>{picker}</Panel>}
       bottomLeft={<Chat projectId={repo.project_id} />}
       topRight={<Panel title={`Reviews${project ? ` (${project.reviews.length})` : ""}`}>
         {project ? <ReviewTable reviews={project.reviews} onOpen={onOpen} showAgents={showAgents} /> : <p className="muted">Loading…</p>}
@@ -431,6 +552,7 @@ function Review({ id, onProject, onContext, showAgents }) {
           </table>
         </details>
       )}
+      <ChangedFiles reviewId={review.id} highlight={kept.map((f) => f.file)} />
       {review.limitations && (
         <details className="card">
           <summary>Limits</summary>

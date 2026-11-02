@@ -18,7 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from autosde import agents, chat, git, report
+from autosde.batch import MODES, BatchError, Batches
 from autosde.knowledge import Knowledge, KnowledgeError, connect
+from autosde.remote import RemoteError, Remotes
 from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, approve, cancel, prepare
 from autosde.scan import ScanUnavailable, scanner
@@ -47,6 +49,10 @@ class App:
         self._repos = None  # (found_at, [paths]) from the last repository walk
         self._models = None  # cached model list; fetched once per start
         Knowledge(store.db, embed=None, scan=None)  # create the knowledge tables once
+        # GitHub clones live next to the database, e.g. ~/.autosde/repos/<owner>/<name>.
+        self.repos_root = (Path(settings.db_path).parent / "repos").resolve()
+        Remotes(store.db, self.repos_root)
+        Batches(store.db)
 
     def models(self):
         """Models for the Agents page: the key's text models, or what is configured."""
@@ -65,7 +71,8 @@ class App:
             path = Path(raw).expanduser().resolve() if raw else self.browse_root
         except (OSError, RuntimeError, ValueError):
             return None
-        if path != self.browse_root and self.browse_root not in path.parents:
+        roots = (self.browse_root, getattr(self, "repos_root", self.browse_root))
+        if not any(path == root or root in path.parents for root in roots):
             return None
         return path if path.is_dir() else None
 
@@ -133,9 +140,20 @@ class App:
                 recent.append(entry)
             else:
                 blocked.append(p["path"])
+        remotes = self._remotes().list()
+        for remote in remotes:
+            seen.add(str(Path(remote["path"]).resolve()))
+        recent = [r for r in recent if not any(Path(r["path"]).resolve() == Path(x["path"]).resolve()
+                                                for x in remotes)]
         available = [{"name": Path(path).name, "path": path} for path in found if path not in seen]
         available.sort(key=lambda r: r["name"].lower())
+        reviewed = {str(Path(p["path"]).resolve()): p for p in self.store.projects()}
+        github = [{"name": f"{r['owner']}/{r['name']}", "path": r["path"], "remote_id": r["id"],
+                   "status": r["status"], "error": r["error"], "fetched_at": r["fetched_at"],
+                   "reviews": (reviewed.get(str(Path(r["path"]).resolve())) or {}).get("reviews", 0)}
+                  for r in remotes]
         return {
+            "github": github,
             "recent": recent,
             "available": available,
             "blocked": [{"name": Path(path).name, "path": path}
@@ -218,6 +236,23 @@ class App:
                                        + tokens_out * self.settings.output_price) / 1e6, 6),
             }
         return r
+
+    def review_files(self, review_id, path=None):
+        """Changed files of a review, or one file's diff, read from the repository now.
+
+        Source code is never stored; it's read from git for display only."""
+        r = self.store.review(review_id)
+        if r is None:
+            raise ApiError(404, "No such review.")
+        try:
+            repo = self._repo(r["project_path"])
+            if path is None:
+                return {"files": git.changed_files(repo, r["base_sha"], r["head_sha"])}
+            return git.file_diff(repo, r["base_sha"], r["head_sha"], path)
+        except ApiError:
+            raise ApiError(410, "The repository isn't available on this machine any more.") from None
+        except git.GitError as error:
+            raise ApiError(400, str(error)) from None
 
     def estimate(self, review_id, files):
         with self._lock:
@@ -363,6 +398,83 @@ class App:
                 return None, used
         return complete
 
+    # --- GitHub repositories and history batches ------------------------------
+
+    def _remotes(self):
+        return Remotes(connect(self.settings.db_path), self.repos_root)
+
+    def remotes(self, method, parts, body):
+        remotes = self._remotes()
+        try:
+            if method == "GET" and not parts:
+                return remotes.list()
+            if method == "POST" and not parts:
+                remote_id = remotes.add(body.get("repo"))
+                threading.Thread(target=remotes.clone, args=(remote_id,), daemon=True).start()
+                return remotes.get(remote_id)
+            if parts and parts[0].isdigit() and method == "POST":
+                remote_id, action = int(parts[0]), parts[1:]
+                if action == ["fetch"]:
+                    remotes.get(remote_id)
+                    threading.Thread(target=remotes.fetch, args=(remote_id,), daemon=True).start()
+                    return {"id": remote_id, "status": "fetching"}
+                if action == ["retry"]:
+                    self.store.db.execute("UPDATE remotes SET status = 'cloning', error = NULL WHERE id = ?",
+                                          (remote_id,))
+                    threading.Thread(target=remotes.clone, args=(remote_id,), daemon=True).start()
+                    return {"id": remote_id, "status": "cloning"}
+                if action == ["delete"]:
+                    remotes.remove(remote_id)
+                    self._repos = None
+                    return {"ok": True}
+        except RemoteError as error:
+            raise ApiError(400, str(error)) from None
+        raise ApiError(404, "Not found.")
+
+    def _review_commit(self, repo):
+        """review(sha) -> (review id, cost) for a batch, with the usual scan and approval rules."""
+        from autosde.review import run_review
+        from autosde.scan import scanner as make_scanner
+
+        def review(sha):
+            model = self.model_factory()
+            review_id = run_review(repo, sha, store=self.store, model=model, settings=self.settings,
+                                   scan=make_scanner(self.settings.gitleaks))
+            return review_id, (self.store.review(review_id) or {}).get("cost_usd", 0.0)
+        return review
+
+    def batches(self, method, parts, body, query=None):
+        batches = Batches(connect(self.settings.db_path))
+        try:
+            if method == "GET" and not parts:
+                if query and query.get("repo"):
+                    return batches.for_repo(self._repo(query["repo"]))
+                return {"modes": MODES}
+            if method == "POST" and not parts:
+                repo = self._repo(body.get("repo"))
+                limit, every = body.get("limit", 20), body.get("every", 1)
+                return batches.plan(repo, str(body.get("from") or ""), str(body.get("to") or ""),
+                                    mode=body.get("mode"), settings=self.settings, every=every, limit=limit)
+            if parts and parts[0].isdigit():
+                batch_id, action = int(parts[0]), parts[1:]
+                if method == "GET" and not action:
+                    return batches.get(batch_id)
+                if method == "POST" and action == ["start"]:
+                    batch = batches.get(batch_id)
+                    try:
+                        self.model_factory()
+                    except RuntimeError:
+                        raise ApiError(503, "Reviews need an OpenAI key (OPENAI_API_KEY).") from None
+                    cap = body.get("max_cost")
+                    batches.start(batch_id, self._review_commit(batch["repo"]),
+                                  max_cost=cap if isinstance(cap, (int, float)) else None)
+                    return batches.get(batch_id)
+                if method == "POST" and action == ["cancel"]:
+                    return batches.cancel(batch_id)
+        except (BatchError, git.GitError) as error:
+            raise ApiError(400, str(error)) from None
+        raise ApiError(404, "Not found.")
+
     def knowledge(self, method, parts, body):
         kb = self._knowledge()
         try:
@@ -505,6 +617,12 @@ def handler_for(app):
                 if path == "/api/knowledge" or path.startswith("/api/knowledge/"):
                     parts = [p for p in path[len("/api/knowledge"):].split("/") if p]
                     return self._json(200, app.knowledge("GET", parts, {}))
+                for prefix, handler in (("/api/remotes", app.remotes), ("/api/batches", app.batches)):
+                    if path == prefix or path.startswith(prefix + "/"):
+                        parts = [p for p in path[len(prefix):].split("/") if p]
+                        if handler == app.batches:
+                            return self._json(200, handler("GET", parts, {}, query))
+                        return self._json(200, handler("GET", parts, {}))
                 if path == "/api/agent-runs":
                     return self._json(200, app.store.agents())
                 if path == "/api/projects":
@@ -523,6 +641,8 @@ def handler_for(app):
                                       {"Content-Disposition": "attachment; filename="
                                        f'"{re.sub(r"[^A-Za-z0-9._-]", "_", review["project"])}'
                                        f'-review-{review["number"]}.sarif"'})
+                if m := re.fullmatch(r"/api/reviews/(\d+)/files", path):
+                    return self._json(200, app.review_files(int(m[1]), query.get("path")))
                 if m := re.fullmatch(r"/api/reviews/(\d+)", path):
                     return self._json(200, app.review(int(m[1])))
                 raise ApiError(404, "Not found.")
@@ -554,6 +674,10 @@ def handler_for(app):
                 if self.path == "/api/knowledge" or self.path.startswith("/api/knowledge/"):
                     parts = [p for p in self.path[len("/api/knowledge"):].split("/") if p]
                     return self._json(200, app.knowledge("POST", parts, body))
+                for prefix, handler in (("/api/remotes", app.remotes), ("/api/batches", app.batches)):
+                    if self.path == prefix or self.path.startswith(prefix + "/"):
+                        parts = [p for p in self.path[len(prefix):].split("/") if p]
+                        return self._json(200, handler("POST", parts, body))
                 if self.path == "/api/chat/clear":
                     app.store.clear_chat(None)
                     return self._json(200, {"messages": []})

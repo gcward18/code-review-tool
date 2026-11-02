@@ -384,3 +384,6 @@ form.rename input { padding: 4px 8px; }
 .diff tr.del td { background: color-mix(in srgb, var(--error) 14%, transparent); }
 .diff tr.fold td { background: var(--accent-soft); padding: 3px 10px; font-family: var(--font-body); font-size: 12px; }
 .diff tr.fold button { margin-left: 12px; font-size: 12px; }
+.gh-remove { padding: 0 6px; font-size: 11px; opacity: 0; }
+.node:hover .gh-remove { opacity: 1; }
+.gh-link { text-decoration: none; }

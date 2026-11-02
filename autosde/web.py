@@ -20,6 +20,7 @@ from pathlib import Path
 from autosde import agents, chat, git, report
 from autosde.batch import MODES, BatchError, Batches
 from autosde.knowledge import Knowledge, KnowledgeError, connect
+from autosde import github
 from autosde.remote import RemoteError, Remotes
 from autosde.llm import OpenAIModel
 from autosde.review import ReviewError, approve, cancel, prepare
@@ -49,9 +50,8 @@ class App:
         self._repos = None  # (found_at, [paths]) from the last repository walk
         self._models = None  # cached model list; fetched once per start
         Knowledge(store.db, embed=None, scan=None)  # create the knowledge tables once
-        # GitHub clones live next to the database, e.g. ~/.autosde/repos/<owner>/<name>.
-        self.repos_root = (Path(settings.db_path).parent / "repos").resolve()
-        Remotes(store.db, self.repos_root)
+        self.github_client = github.Client()  # gh CLI when logged in, else anonymous HTTPS
+        Remotes(store.db, client=self.github_client)
         Batches(store.db)
 
     def models(self):
@@ -71,12 +71,23 @@ class App:
             path = Path(raw).expanduser().resolve() if raw else self.browse_root
         except (OSError, RuntimeError, ValueError):
             return None
-        roots = (self.browse_root, getattr(self, "repos_root", self.browse_root))
-        if not any(path == root or root in path.parents for root in roots):
+        if path != self.browse_root and self.browse_root not in path.parents:
             return None
         return path if path.is_dir() else None
 
+    def _source(self, raw):
+        """The GitHub source for an added repository's path, else None (a local repository)."""
+        if not github.is_github(raw):
+            return None
+        if self._remotes().by_path(raw) is None:
+            raise ApiError(400, "Add that GitHub repository first.")
+        owner, name = github.from_path(raw)
+        return github.Repo(owner, name, self.github_client)
+
     def _repo(self, raw):
+        if github.is_github(raw):
+            self._source(raw)
+            return raw
         path = self._inside(raw)
         if path is None:
             raise ApiError(400, "Choose a folder inside your home folder.")
@@ -141,19 +152,15 @@ class App:
             else:
                 blocked.append(p["path"])
         remotes = self._remotes().list()
-        for remote in remotes:
-            seen.add(str(Path(remote["path"]).resolve()))
-        recent = [r for r in recent if not any(Path(r["path"]).resolve() == Path(x["path"]).resolve()
-                                                for x in remotes)]
         available = [{"name": Path(path).name, "path": path} for path in found if path not in seen]
         available.sort(key=lambda r: r["name"].lower())
-        reviewed = {str(Path(p["path"]).resolve()): p for p in self.store.projects()}
-        github = [{"name": f"{r['owner']}/{r['name']}", "path": r["path"], "remote_id": r["id"],
-                   "status": r["status"], "error": r["error"], "fetched_at": r["fetched_at"],
-                   "reviews": (reviewed.get(str(Path(r["path"]).resolve())) or {}).get("reviews", 0)}
-                  for r in remotes]
+        reviewed = {p["path"]: p for p in self.store.projects()}
+        github_repos = [{"name": f"{r['owner']}/{r['name']}", "path": r["path"], "remote_id": r["id"],
+                         "status": r["status"], "error": r["error"],
+                         "reviews": (reviewed.get(r["path"]) or {}).get("reviews", 0)}
+                        for r in remotes]
         return {
-            "github": github,
+            "github": github_repos,
             "recent": recent,
             "available": available,
             "blocked": [{"name": Path(path).name, "path": path}
@@ -179,8 +186,30 @@ class App:
             "entries": [{"name": p.name, "path": str(p), "repo": (p / ".git").exists()} for p in folders],
         }
 
+    def _github_options(self, source, ref, *, skip_first=False):
+        try:
+            commits = source.commits(ref, per_page=51 if skip_first else 50)
+        except github.GitHubError as error:
+            raise ApiError(400, str(error)) from None
+        commits = commits[1:] if skip_first else commits
+        return [{"value": c["sha"], "label": f"{c['short']} {c['subject'][:80]}", "kind": "commit",
+                 "when": c["date"]} for c in commits]
+
     def repo(self, raw):
         """From choices: HEAD, branches and recent commits. Default HEAD."""
+        source = self._source(raw)
+        if source is not None:
+            try:
+                info, branches = source.info(), source.branches()
+            except github.GitHubError as error:
+                raise ApiError(400, str(error)) from None
+            default = info["default_branch"]
+            branches = [default] + [b for b in branches if b != default]
+            return {"path": raw, "name": f"{source.owner}/{source.name}", "github": True,
+                    "project_id": (self.store.find_project(raw) or {}).get("id"),
+                    "from": [{"value": b, "label": b, "kind": "branch"} for b in branches]
+                            + self._github_options(source, default),
+                    "default_from": default}
         root = self._repo(raw)
         branches, commits = git.refs(root)
         return {
@@ -193,6 +222,12 @@ class App:
 
     def older(self, raw, start):
         """To choices: only refs strictly older than From. Default main, else From's parent."""
+        source = self._source(raw)
+        if source is not None:
+            if start not in {o["value"] for o in self.repo(raw)["from"]}:
+                raise ApiError(400, "Pick From from the list.")
+            options = self._github_options(source, start, skip_first=True)
+            return {"to": options, "default_to": options[0]["value"] if options else None}
         root = self._repo(raw)
         branches, _ = git.refs(root)
         if start not in {o["value"] for o in self.repo(raw)["from"]}:
@@ -245,6 +280,12 @@ class App:
         if r is None:
             raise ApiError(404, "No such review.")
         try:
+            if github.is_github(r["project_path"]):
+                owner, name = github.from_path(r["project_path"])
+                source = github.Repo(owner, name, self.github_client)
+                if path is None:
+                    return {"files": source.changed_files(r["base_sha"], r["head_sha"])}
+                return source.file_diff(r["base_sha"], r["head_sha"], path)
             repo = self._repo(r["project_path"])
             if path is None:
                 return {"files": git.changed_files(repo, r["base_sha"], r["head_sha"])}
@@ -267,6 +308,7 @@ class App:
     def submit(self, body):
         """Plan a review in the background; return its id once it starts."""
         root = self._repo(body.get("repo", ""))
+        source = self._source(body.get("repo", ""))
         start, end = body.get("from", ""), body.get("to", "")
         if end not in {o["value"] for o in self.older(str(root), start)["to"]}:
             raise ApiError(400, "Pick To from the older commits.")
@@ -285,7 +327,7 @@ class App:
         def work():
             try:
                 pending = prepare(root, f"{end}..{start}", store=self.store, model=model,
-                                  settings=self.settings, on_start=on_start)
+                                  settings=self.settings, on_start=on_start, source=source)
                 if pending.result.plan:
                     with self._lock:
                         self.pending[pending.review_id] = pending
@@ -401,32 +443,20 @@ class App:
     # --- GitHub repositories and history batches ------------------------------
 
     def _remotes(self):
-        return Remotes(connect(self.settings.db_path), self.repos_root)
+        return Remotes(connect(self.settings.db_path), client=self.github_client)
 
     def remotes(self, method, parts, body):
         remotes = self._remotes()
         try:
             if method == "GET" and not parts:
                 return remotes.list()
+            if method == "GET" and parts == ["status"]:
+                return {"gh": bool(self.github_client.gh), "authenticated": self.github_client.authenticated()}
             if method == "POST" and not parts:
-                remote_id = remotes.add(body.get("repo"))
-                threading.Thread(target=remotes.clone, args=(remote_id,), daemon=True).start()
-                return remotes.get(remote_id)
-            if parts and parts[0].isdigit() and method == "POST":
-                remote_id, action = int(parts[0]), parts[1:]
-                if action == ["fetch"]:
-                    remotes.get(remote_id)
-                    threading.Thread(target=remotes.fetch, args=(remote_id,), daemon=True).start()
-                    return {"id": remote_id, "status": "fetching"}
-                if action == ["retry"]:
-                    self.store.db.execute("UPDATE remotes SET status = 'cloning', error = NULL WHERE id = ?",
-                                          (remote_id,))
-                    threading.Thread(target=remotes.clone, args=(remote_id,), daemon=True).start()
-                    return {"id": remote_id, "status": "cloning"}
-                if action == ["delete"]:
-                    remotes.remove(remote_id)
-                    self._repos = None
-                    return {"ok": True}
+                return remotes.get(remotes.add(body.get("repo")))
+            if parts and parts[0].isdigit() and method == "POST" and parts[1:] == ["delete"]:
+                remotes.remove(int(parts[0]))
+                return {"ok": True}
         except RemoteError as error:
             raise ApiError(400, str(error)) from None
         raise ApiError(404, "Not found.")
@@ -436,10 +466,12 @@ class App:
         from autosde.review import run_review
         from autosde.scan import scanner as make_scanner
 
+        source = self._source(repo)
+
         def review(sha):
             model = self.model_factory()
             review_id = run_review(repo, sha, store=self.store, model=model, settings=self.settings,
-                                   scan=make_scanner(self.settings.gitleaks))
+                                   scan=make_scanner(self.settings.gitleaks), source=source)
             return review_id, (self.store.review(review_id) or {}).get("cost_usd", 0.0)
         return review
 
@@ -454,7 +486,8 @@ class App:
                 repo = self._repo(body.get("repo"))
                 limit, every = body.get("limit", 20), body.get("every", 1)
                 return batches.plan(repo, str(body.get("from") or ""), str(body.get("to") or ""),
-                                    mode=body.get("mode"), settings=self.settings, every=every, limit=limit)
+                                    mode=body.get("mode"), settings=self.settings, every=every, limit=limit,
+                                    source=self._source(body.get("repo")))
             if parts and parts[0].isdigit():
                 batch_id, action = int(parts[0]), parts[1:]
                 if method == "GET" and not action:

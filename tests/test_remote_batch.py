@@ -1,17 +1,17 @@
-import functools
 import json
 import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
 
+from autosde import github
 from autosde.batch import BatchError, Batches, commits_in
 from autosde.db import Store
-from autosde.remote import Remotes, RemoteError, parse
+from autosde.remote import Remotes
 from helpers import git, repository, settings
 
 
@@ -32,57 +32,128 @@ def history(root):
     return repo
 
 
-class ParseTests(unittest.TestCase):
-    def test_accepts_github_forms_and_rejects_others(self):
-        for text, url in (("octo/repo", "https://github.com/octo/repo.git"),
-                          ("https://github.com/octo/repo", "https://github.com/octo/repo.git"),
-                          ("github.com/octo/repo.git", "https://github.com/octo/repo.git"),
-                          ("git@github.com:octo/repo.git", "git@github.com:octo/repo.git")):
-            self.assertEqual(parse(text), ("octo", "repo", url), text)
-        for bad in ("", "octo", "https://gitlab.com/octo/repo", "file:///etc", "octo/repo; rm -rf /",
-                    "--upload-pack=x/y", "../x"):
-            with self.assertRaises(RemoteError, msg=bad):
-                parse(bad)
+class FakeGitHub:
+    """Answers the GitHub API calls AutoSDE makes, from a local repository."""
+
+    def __init__(self, repo, owner="octo", name="calc"):
+        self.repo, self.prefix, self.calls = repo, f"repos/{owner}/{name}", []
+
+    def authenticated(self):
+        return True
+
+    def _commit(self, sha):
+        full = git(self.repo, "rev-parse", sha)
+        parents = git(self.repo, "log", "-1", "--format=%P", full).split()
+        return {"sha": full, "parents": [{"sha": p} for p in parents],
+                "commit": {"message": git(self.repo, "log", "-1", "--format=%B", full),
+                           "author": {"name": "Dev"},
+                           "committer": {"date": git(self.repo, "log", "-1", "--format=%cI", full)}}}
+
+    def get(self, path, *, raw=False):
+        from urllib.parse import parse_qs, unquote, urlsplit
+        self.calls.append(path)
+        parts = urlsplit(path)
+        query = {k: v[0] for k, v in parse_qs(parts.query).items()}
+        tail = parts.path[len(self.prefix):].lstrip("/")
+        if not parts.path.startswith(self.prefix):
+            raise github.GitHubError("GitHub says that doesn't exist or you can't access it.")
+        if tail == "":
+            return {"default_branch": "main", "private": True, "description": "test"}
+        if tail == "branches":
+            return [{"name": b} for b in git(self.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()]
+        if tail == "commits":
+            shas = git(self.repo, "rev-list", "--first-parent", query["sha"]).split()
+            per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+            return [self._commit(s) for s in shas[(page - 1) * per:page * per]]
+        if tail.startswith("commits/"):
+            return self._commit(tail.split("/", 1)[1])
+        if tail.startswith("compare/"):
+            base, head = tail.split("/", 1)[1].split("...")
+            files = []
+            for line in git(self.repo, "diff", "--name-status", base, head).splitlines():
+                status, name = line.split("\t")[0], line.split("\t")[-1]
+                patch = git(self.repo, "diff", "-U3", base, head, "--", name).split("\n@@", 1)
+                files.append({"filename": name, "status": {"A": "added", "D": "removed"}.get(status[0], "modified"),
+                              "patch": "@@" + patch[1] if len(patch) > 1 else None,
+                              "additions": 1, "deletions": 0})
+            shas = git(self.repo, "rev-list", "--reverse", f"{base}..{head}").split()
+            return {"files": files, "commits": [self._commit(s) for s in shas]}
+        if tail.startswith("contents/"):
+            name = unquote(tail.split("/", 1)[1])
+            import subprocess
+            out = subprocess.run(["git", "-C", str(self.repo), "show", f"{query['ref']}:{name}"], capture_output=True)
+            if out.returncode:
+                raise github.GitHubError("missing")
+            return out.stdout
+        raise AssertionError(f"unexpected GitHub call {path}")
 
 
-class RemoteTests(unittest.TestCase):
+class GitHubSourceTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name)
-        self.upstream = history(self.tmp / "up")
-        self.store = Store(self.tmp / "k.db")
-        self.remotes = Remotes(self.store.db, self.tmp / "repos", clone_url=lambda url: str(self.upstream))
+        self.local = history(Path(tmp.name) / "up")
+        self.fake = FakeGitHub(self.local)
+        self.source = github.Repo("octo", "calc", self.fake)
+        self.settings = settings(tmp.name)
+        self.store = Store(self.settings.db_path)
 
-    def test_clone_fetch_and_remove(self):
-        remote_id = self.remotes.add("octo/calculator")
-        self.remotes.clone(remote_id)
-        remote = self.remotes.get(remote_id)
-        self.assertEqual(remote["status"], "ready")
-        path = Path(remote["path"])
-        self.assertEqual(path, (self.tmp / "repos" / "octo" / "calculator").resolve())
-        self.assertTrue((path / "step1.py").exists())
-        with self.assertRaises(RemoteError):
-            self.remotes.add("https://github.com/octo/calculator")  # same repository
+    def test_parse_accepts_github_forms_only(self):
+        for text in ("octo/calc", "https://github.com/octo/calc", "github.com/octo/calc.git",
+                     "git@github.com:octo/calc.git"):
+            self.assertEqual(github.parse(text), ("octo", "calc"), text)
+        for bad in ("", "octo", "https://gitlab.com/octo/calc", "file:///etc", "octo/calc; rm -rf /", "../x"):
+            with self.assertRaises(github.GitHubError, msg=bad):
+                github.parse(bad)
 
-        (self.upstream / "new.py").write_text("NEW = 1\n")
-        git(self.upstream, "add", "-A")
-        git(self.upstream, "commit", "-qm", "upstream change")
-        self.remotes.fetch(remote_id)
-        self.assertTrue((path / "new.py").exists())
-        self.assertEqual(self.remotes.get(remote_id)["status"], "ready")
+    def test_capture_matches_the_local_source(self):
+        from autosde import git as capture_git
 
-        self.remotes.remove(remote_id)
-        self.assertFalse(path.exists())
-        self.assertEqual(self.remotes.list(), [])
+        remote = self.source.capture("HEAD")
+        local = capture_git.capture(self.local, "HEAD")
+        self.assertEqual(remote.repo, "https://github.com/octo/calc")
+        self.assertEqual((remote.base, remote.head), (local.base, local.head))
+        self.assertEqual([(f.path, f.head) for f in remote.files], [(f.path, f.head) for f in local.files])
+        with self.assertRaises(github.GitHubError):
+            self.source.resolve_range("--upload-pack=evil")
 
-    def test_failed_clone_records_a_readable_error(self):
-        broken = Remotes(self.store.db, self.tmp / "repos", clone_url=lambda url: str(self.tmp / "missing"))
-        remote_id = broken.add("octo/missing")
-        broken.clone(remote_id)
-        remote = broken.get(remote_id)
-        self.assertEqual(remote["status"], "failed")
-        self.assertTrue(remote["error"])
+    def test_review_batch_and_diff_from_github_without_a_clone(self):
+        from autosde.llm import ScriptedModel
+        from autosde.review import run_review
+        from helpers import FINDING, PLAN, clean_scan, findings, verdict
+
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)], "aggregator": [verdict()]})
+        review_id = run_review("https://github.com/octo/calc", "HEAD", store=self.store, model=model,
+                               settings=self.settings, scan=clean_scan, source=self.source)
+        review = self.store.review(review_id)
+        self.assertEqual((review["project"], review["project_path"]), ("octo/calc", "https://github.com/octo/calc"))
+        root = git(self.local, "rev-list", "--max-parents=0", "HEAD")
+        batch = Batches(self.store.db).plan("https://github.com/octo/calc", "main", root, mode="every",
+                                            settings=self.settings, source=self.source)
+        self.assertEqual([c["subject"] for c in batch["commits"]], ["bug", "Merge feature", "step 0", "step 1"])
+        merges = Batches(self.store.db).plan("x", "main", root, mode="merges", settings=self.settings,
+                                             source=self.source)
+        self.assertEqual([c["subject"] for c in merges["commits"]], ["Merge feature"])
+        files = self.source.changed_files(review["base_sha"], review["head_sha"])
+        self.assertEqual([f["path"] for f in files], ["step1.py"])
+        rows = self.source.file_diff(review["base_sha"], review["head_sha"], "step1.py")["rows"]
+        self.assertEqual(rows, [{"t": "+", "o": None, "n": 1, "s": "VALUE = 1"}])
+
+    def test_rows_between_aligns_old_and_new_lines(self):
+        result = github.rows_between("a\nb\nc\n", "a\nB\nc\nd\n")
+        self.assertEqual([(r["t"], r["o"], r["n"]) for r in result["rows"]],
+                         [(" ", 1, 1), ("-", 2, None), ("+", None, 2), (" ", 3, 3), ("+", None, 4)])
+
+    def test_remotes_check_github_and_upgrade_old_clone_rows(self):
+        remotes = Remotes(self.store.db, client=self.fake)
+        added = remotes.get(remotes.add("https://github.com/octo/calc"))
+        self.assertEqual(added["path"], "https://github.com/octo/calc")
+        with self.assertRaises(github.GitHubError):
+            remotes.add("octo/calc")
+        with self.assertRaises(github.GitHubError):
+            remotes.add("octo/missing")  # GitHub says it doesn't exist
+        self.store.db.execute("UPDATE remotes SET path = '/old/clone/octo/calc'")
+        self.assertEqual(Remotes(self.store.db, client=self.fake).list()[0]["path"], "https://github.com/octo/calc")
 
 
 class BatchTests(unittest.TestCase):
@@ -190,21 +261,18 @@ class DiffTests(unittest.TestCase):
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        from autosde.llm import ScriptedModel
         from autosde.web import App, handler_for
+        from helpers import FINDING, PLAN, findings, verdict
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name)
-        self.upstream = history(self.tmp / "up")
+        self.local = history(Path(tmp.name) / "up")
         self.settings = settings(tmp.name)
         self.store = Store(self.settings.db_path)
-        local = functools.partial(Remotes, clone_url=lambda url: str(self.upstream))
-        patcher = patch("autosde.web.Remotes", local)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        from autosde.llm import ScriptedModel
-        self.app = App(self.store, self.settings, model_factory=lambda: ScriptedModel({}), port=0,
-                       browse_root=tmp.name)
+        model = lambda: ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)], "aggregator": [verdict()]})
+        self.app = App(self.store, self.settings, model_factory=model, port=0, browse_root=tmp.name)
+        self.app.github_client = FakeGitHub(self.local)
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.app))
         self.app.port = server.server_address[1]
         self.url = f"http://127.0.0.1:{self.app.port}"
@@ -223,39 +291,38 @@ class ApiTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read())
 
-    def test_add_remote_appears_in_the_sidebar_and_batches_plan_on_it(self):
-        added = self.call("/api/remotes", {"repo": "octo/calculator"})
-        for _ in range(50):
-            remote = self.call("/api/remotes")[0]
-            if remote["status"] != "cloning":
-                break
-            threading.Event().wait(0.1)
-        self.assertEqual(remote["status"], "ready", remote["error"])
-        github = self.call("/api/workspaces")["github"]
-        self.assertEqual([g["name"] for g in github], ["octo/calculator"])
-        root = git(self.upstream, "rev-list", "--max-parents=0", "HEAD")
-        plan = self.call("/api/batches", {"repo": added["path"], "from": "HEAD", "to": root,
-                                          "mode": "merges", "limit": 5})
-        self.assertEqual([c["subject"] for c in plan["commits"]], ["Merge feature"])
-        self.assertEqual(self.call(f"/api/batches?repo={urllib.request.quote(added['path'])}")[0]["id"], plan["id"])
-        self.assertEqual(self.call(f"/api/batches/{plan['id']}/cancel", {})["status"], "cancelled")
-        self.assertIn("merges", self.call("/api/batches")["modes"])
-        from autosde.review import run_review
-        from autosde.llm import ScriptedModel
-        from helpers import PLAN, FINDING, clean_scan, findings, verdict
-        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)], "aggregator": [verdict()]})
-        review_id = run_review(added["path"], "HEAD", store=self.store, model=model, settings=self.settings,
-                               scan=clean_scan)
-        listing = self.call(f"/api/reviews/{review_id}/files")["files"]
-        self.assertEqual([f["path"] for f in listing], ["step1.py"])
-        rows = self.call(f"/api/reviews/{review_id}/files?path=step1.py")["rows"]
-        self.assertEqual(rows, [{"t": "+", "o": None, "n": 1, "s": "VALUE = 1"}])
+    def test_github_repository_reviews_without_cloning(self):
+        from unittest.mock import patch
 
+        from helpers import clean_scan
+
+        added = self.call("/api/remotes", {"repo": "octo/calc"})
+        path = added["path"]
+        self.assertEqual([g["name"] for g in self.call("/api/workspaces")["github"]], ["octo/calc"])
+        repo = self.call(f"/api/repo?{urllib.parse.urlencode({'path': path})}")
+        self.assertTrue(repo["github"])
+        self.assertEqual(repo["default_from"], "main")
+        older = self.call(f"/api/older?{urllib.parse.urlencode({'path': path, 'from': 'main'})}")
+        parent = git(self.local, "rev-parse", "main~1")
+        self.assertEqual(older["default_to"], parent)
+        with patch("autosde.review.scanner", return_value=clean_scan):
+            review_id = self.call("/api/reviews", {"repo": path, "from": "main", "to": parent})["id"]
+            for _ in range(50):
+                review = self.call(f"/api/reviews/{review_id}")
+                if review["status"] == "awaiting_approval":
+                    break
+                threading.Event().wait(0.1)
+        self.assertEqual(review["project"], "octo/calc")
+        files = self.call(f"/api/reviews/{review_id}/files")["files"]
+        self.assertEqual([f["path"] for f in files], ["step1.py"])
+        root = git(self.local, "rev-list", "--max-parents=0", "HEAD")
+        plan = self.call("/api/batches", {"repo": path, "from": "main", "to": root, "mode": "merges", "limit": 5})
+        self.assertEqual([c["subject"] for c in plan["commits"]], ["Merge feature"])
+        with self.assertRaises(urllib.error.HTTPError) as unknown:
+            self.call(f"/api/repo?{urllib.parse.urlencode({'path': 'https://github.com/other/repo'})}")
+        self.assertEqual(unknown.exception.code, 400)  # only added repositories
         self.call(f"/api/remotes/{added['id']}/delete", {})
-        self.assertFalse(Path(added["path"]).exists())
-        with self.assertRaises(urllib.error.HTTPError) as gone:
-            self.call(f"/api/reviews/{review_id}/files")
-        self.assertEqual(gone.exception.code, 410)
+        self.assertEqual(self.call("/api/remotes"), [])
 
 
 if __name__ == "__main__":

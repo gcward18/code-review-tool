@@ -98,10 +98,10 @@ function AddGitHub({ onAdded, onCancel }) {
         <span className="small">GitHub repository</span>
         <input autoFocus value={text} placeholder="owner/name or https://github.com/owner/name" onChange={(e) => setText(e.target.value)} />
       </label>
-      <span className="small muted">Cloned with your own git credentials, so private repos work if `git clone` does.</span>
+      <span className="small muted">Read straight from GitHub; nothing is cloned. Private repositories work when the `gh` CLI is logged in.</span>
       {error && <p className="error small">{error}</p>}
       <div className="actions">
-        <button type="submit" disabled={busy || !text.trim()}>{busy ? "Adding…" : "Clone"}</button>
+        <button type="submit" disabled={busy || !text.trim()}>{busy ? "Checking…" : "Add"}</button>
         <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
       </div>
     </form>
@@ -114,24 +114,21 @@ function GitHubList({ items, selected, onSelect, onChanged }) {
       <h3>GitHub <span className="count">{items.length}</span></h3>
       <ul className="tree">
         {items.map((r) => {
-          const ready = r.status === "ready" || r.status === "fetching";
+          const ready = true;
           return (
             <li key={r.path}>
               <div className={`node ${selected === r.path ? "selected" : ""} ${ready ? "" : "blocked"}`}
                 title={r.error || r.path} onClick={ready ? () => onSelect(r.path) : undefined}>
                 <span className="name">⑂ {r.name}</span>
-                {r.status === "cloning" && <span className="count">cloning…</span>}
-                {r.status === "fetching" && <span className="count">fetching…</span>}
-                {r.status === "failed" && (
-                  <button className="secondary small-btn" onClick={async (e) => {
+                <button className="secondary icon gh-remove" title="Remove from AutoSDE (reviews are kept)"
+                  aria-label={`Remove ${r.name}`} onClick={async (e) => {
                     e.stopPropagation();
-                    await api.retryRemote(r.remote_id);
+                    if (!window.confirm(`Remove ${r.name} from AutoSDE? Its reviews are kept.`)) return;
+                    await api.removeRemote(r.remote_id);
                     onChanged();
-                  }}>Retry</button>
-                )}
+                  }}>✕</button>
                 {r.reviews > 0 && <span className="count">{r.reviews}</span>}
               </div>
-              {r.status === "failed" && r.error && <p className="error small gh-error">{r.error}</p>}
             </li>
           );
         })}
@@ -150,11 +147,7 @@ function Workspaces({ selected, onSelect, showBlocked, refresh }) {
     if (!tick) setData(null);
     api.workspaces().then(setData).catch((e) => setError(e.message));
   }, [refresh, tick]);
-  useEffect(() => {  // follow clones and fetches in progress
-    if (!data?.github?.some((r) => ["cloning", "fetching"].includes(r.status))) return undefined;
-    const timer = setTimeout(() => setTick((t) => t + 1), 2000);
-    return () => clearTimeout(timer);
-  }, [data]);
+
   const q = query.trim().toLowerCase();
   const match = (r) => !q || r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q);
   const pick = (list) => (data?.[list] || []).filter(match);
@@ -236,24 +229,10 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
   const [repo, setRepo] = useState(null);
   const [project, setProject] = useState(null);
   const [tab, setTab] = useState("single");
-  const [remote, setRemote] = useState(null);
   const [version, setVersion] = useState(0);  // bumps when a batch finishes a review
-  const [fetched, setFetched] = useState(0);  // bumps when a GitHub fetch finishes
   useEffect(() => {
     if (repo?.project_id) api.project(repo.project_id).then(setProject);
   }, [repo?.project_id, version]);
-  useEffect(() => {
-    api.remotes().then((list) => setRemote(list.find((r) => r.path === repoPath) || null)).catch(() => {});
-  }, [repoPath]);
-  useEffect(() => {  // follow a fetch
-    if (remote?.status !== "fetching") return undefined;
-    const timer = setTimeout(async () => {
-      const next = (await api.remotes()).find((r) => r.id === remote.id);
-      setRemote(next || null);
-      if (next?.status === "ready") setFetched((f) => f + 1);
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [remote]);
   const refreshRepo = () => api.repo(repoPath).then((data) => setRepo((r) => ({ ...data, _from: r?._from })));
   const [from, setFrom] = useState("");
   const [older, setOlder] = useState(null);
@@ -274,7 +253,7 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
         setFrom(data.default_from);
       })
       .catch((e) => setError(e.message));
-  }, [repoPath, fetched]);
+  }, [repoPath]);
 
   useEffect(() => {
     setOlder(null);
@@ -305,7 +284,7 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
   if (!repo) return <div className="card muted">Loading repository…</div>;
   const picker = (
     <>
-      <code className="muted small path">{repo.path}</code>
+      {!repo.github && <code className="muted small path">{repo.path}</code>}
       <div className="range">
         <label>
           From <span className="muted small">(newer)</span>
@@ -348,12 +327,8 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
         <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? "tab active" : "tab"}
           onClick={() => setTab(key)}>{label}</button>
       ))}
-      {remote && (
-        <button className="secondary small-btn" disabled={remote.status === "fetching"}
-          title={remote.fetched_at ? `Last fetched ${new Date(remote.fetched_at * 1000).toLocaleString()}` : ""}
-          onClick={async () => setRemote({ ...remote, ...(await api.fetchRemote(remote.id)) })}>
-          {remote.status === "fetching" ? "Fetching…" : "⟳ Fetch latest"}
-        </button>
+      {repo?.github && (
+        <a className="badge gh-link" href={repoPath} target="_blank" rel="noreferrer noopener">GitHub ↗</a>
       )}
     </div>
   );

@@ -283,7 +283,8 @@ class Store:
         """A project by numeric id, exact name or path."""
         rows = self._all(
             "SELECT * FROM projects WHERE CAST(id AS TEXT) = ? OR name = ? OR path = ?",
-            str(ref), str(ref), str(Path(str(ref)).expanduser().resolve()),
+            str(ref), str(ref),
+            str(ref) if str(ref).startswith("https://") else str(Path(str(ref)).expanduser().resolve()),
         )
         return rows[0] if rows else None
 

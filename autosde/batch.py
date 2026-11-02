@@ -76,6 +76,25 @@ def estimate(repo, sha, settings):
             "estimate": price(incoming, outgoing // 3), "max": price(incoming, outgoing)}
 
 
+def estimate_remote(source, sha, settings):
+    """The same estimate from GitHub's file list (patch sizes), without downloading files."""
+    try:
+        base, head = source.resolve_range(sha)
+        files, _ = source.compare(base, head)
+    except git.GitError:
+        return None
+    sendable = [f for f in files if f.get("patch") and f["status"] != "removed" and not flag(f["filename"])]
+    chars = sum(len(f["patch"]) * 4 for f in sendable)  # head files are usually larger than their patch
+    chars = min(chars, settings.max_total_bytes * 2)
+    specialists = len({route(f["filename"]) for f in sendable})
+    incoming = chars // 4 + 1200 * (specialists + 2) + 60 * len(files)
+    outgoing = 1500 + 4000 * specialists + (1500 if specialists else 0)
+    price = lambda i, o: (i * settings.input_price + o * settings.output_price) / 1_000_000
+    return {"files": len(files), "reviewable": len(sendable), "specialists": specialists,
+            "input_tokens": incoming, "max_output_tokens": outgoing,
+            "estimate": price(incoming, outgoing // 3), "max": price(incoming, outgoing)}
+
+
 class Batches:
     def __init__(self, db, *, clock=time.time):
         self.db, self.clock = db, clock
@@ -100,7 +119,7 @@ class Batches:
         return [self._row(r["id"]) for r in self._all(
             "SELECT id FROM batches WHERE repo = ? ORDER BY created_at DESC LIMIT 20", str(repo))]
 
-    def plan(self, repo, start, end, *, mode, settings, every=1, limit=20):
+    def plan(self, repo, start, end, *, mode, settings, every=1, limit=20, source=None):
         """Choose commits in end..start and estimate them; nothing runs until `run`."""
         if mode not in MODES:
             raise BatchError("Choose a batch mode.")
@@ -108,19 +127,29 @@ class Batches:
             raise BatchError(f"Review between 1 and {MAX_COMMITS} commits per batch.")
         if type(every) is not int or not 1 <= every <= 100:
             raise BatchError("N must be between 1 and 100.")
-        root = git.repo_root(repo)
-        base, head = git.resolve_range(root, f"{end}..{start}")
-        shas = commits_in(root, base, head, mode, every, limit)
+        if source is not None:
+            root = source.path
+            base, head = source.resolve_range(f"{end}..{start}")
+            shas = source.commits_between(base, head, mode, every, limit)
+        else:
+            root = git.repo_root(repo)
+            base, head = git.resolve_range(root, f"{end}..{start}")
+            shas = commits_in(root, base, head, mode, every, limit)
         if not shas:
             raise BatchError("No commits match that range and mode.")
         commits = []
         for sha in shas:
-            info = git._git(root, "log", "-1", "--format=%h%x1f%s%x1f%cs", sha).decode().strip()
-            short, subject, date = (info.split("\x1f") + ["", "", ""])[:3]
-            cost = estimate(root, sha, settings)
+            if source is not None:
+                info = source.describe(sha)
+                cost = estimate_remote(source, sha, settings)
+            else:
+                line = git._git(root, "log", "-1", "--format=%h%x1f%s%x1f%cs", sha).decode().strip()
+                short, subject, date = (line.split("\x1f") + ["", "", ""])[:3]
+                info = {"short": short, "subject": subject[:200], "date": date}
+                cost = estimate(root, sha, settings)
             if cost is None:
                 continue  # a root commit has no parent to diff against
-            commits.append({"sha": sha, "short": short, "subject": subject[:200], "date": date, **cost})
+            commits.append({"sha": sha, **info, **cost})
         if not commits:
             raise BatchError("None of those commits can be reviewed.")
         est = round(sum(c["estimate"] for c in commits), 6)

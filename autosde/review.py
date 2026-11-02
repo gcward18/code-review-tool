@@ -34,11 +34,12 @@ def retriever_for(store, model, scan):
     return lambda kb_ids, query: knowledge.search(kb_ids, query)
 
 
-def prepare(repo, range_spec, *, store, model, settings, scan=None, on_start=None):
+def prepare(repo, range_spec, *, store, model, settings, scan=None, on_start=None, source=None):
     """Capture, scan and plan. Only the coordinator (file paths, no code) calls the model."""
     try:
-        changes = git.capture(
-            repo,
+        # A source (such as a GitHub repository) builds the same Changes without a checkout.
+        capture = source.capture if source is not None else lambda spec, **kw: git.capture(repo, spec, **kw)
+        changes = capture(
             range_spec,
             max_file_bytes=settings.max_file_bytes,
             max_total_bytes=settings.max_total_bytes,
@@ -106,10 +107,10 @@ def cancel(pending, *, store):
 
 
 def run_review(repo, range_spec, *, store, model, settings, scan=None, on_start=None,
-               selection=None):
+               selection=None, source=None):
     """Plan and approve in one step (scripts, notebooks, `--yes`)."""
     pending = prepare(repo, range_spec, store=store, model=model, settings=settings, scan=scan,
-                      on_start=on_start)
+                      on_start=on_start, source=source)
     if not pending.result.plan:
         store.finish_review(pending.review_id, pending.result,
                             input_price=settings.input_price, output_price=settings.output_price)

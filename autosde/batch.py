@@ -190,8 +190,10 @@ class Batches:
             "review_ids": "[]", "created_at": self.clock()})
         return self._row(batch_id)
 
-    def start(self, batch_id, review, *, max_cost=None):
-        """Approve and run on a background thread. `review(sha)` returns (review id, cost)."""
+    def start(self, batch_id, review=None, *, max_cost=None, runner=None):
+        """Approve the batch. With `runner` (a callable that schedules `step`, as the web app
+        and AWS do) nothing runs here; otherwise `review(sha) -> (review id, cost)` runs on a
+        background thread and the thread is returned."""
         batch = self._row(batch_id)
         if batch["status"] != "planned":
             raise BatchError("That batch has already been started.")
@@ -199,29 +201,54 @@ class Batches:
         if not 0 < cap <= max(batch["max_cost"], 0.000001) * 5:
             raise BatchError("Set a cost cap above zero (up to five times the estimate's maximum).")
         self.store.update(batch_id, status="running", max_cost=cap)
+        if runner is not None:
+            runner()
+            return None
         thread = threading.Thread(target=self.run, args=(batch_id, review), daemon=True)
         thread.start()
         return thread
 
     def run(self, batch_id, review):
+        while self.step(batch_id, review):
+            pass
+
+    def step(self, batch_id, review):
+        """Review the next commit; returns True while more commits remain to run."""
         batch = self._row(batch_id)
-        spent, done, failed, ids = 0.0, 0, 0, []
-        status = "completed"
-        for commit in batch["commits"]:
-            if self._row(batch_id)["status"] == "cancelling":  # set by `cancel` from any request
-                status = "cancelled"
-                break
-            if spent >= batch["max_cost"]:
-                status = "budget"
-                break
-            try:
-                review_id, cost = review(commit["sha"])
-                ids.append(review_id)
-                spent += cost or 0.0
-                done += 1
-            except Exception:
-                failed += 1  # one bad commit doesn't stop the batch
-            self.store.update(batch_id, spent=round(spent, 6), done=done, failed=failed, review_ids=json.dumps(ids))
+        if batch["status"] == "cancelling":  # set by `cancel` from any request
+            self._finish(batch_id, "cancelled")
+            return False
+        if batch["status"] != "running":
+            return False
+        index = batch["done"] + batch["failed"]
+        commits = batch["commits"]
+        if index >= len(commits):
+            self._finish(batch_id, "completed")
+            return False
+        if batch["spent"] >= batch["max_cost"]:
+            self._finish(batch_id, "budget")
+            return False
+        done, failed, spent, ids = batch["done"], batch["failed"], batch["spent"], batch["review_ids"]
+        try:
+            review_id, cost = review(commits[index]["sha"])
+            ids.append(review_id)
+            spent += cost or 0.0
+            done += 1
+        except Exception:
+            failed += 1  # one bad commit doesn't stop the batch
+        self.store.update(batch_id, spent=round(spent, 6), done=done, failed=failed, review_ids=json.dumps(ids))
+        if index + 1 >= len(commits):
+            self._finish(batch_id, "completed")
+            return False
+        if self._row(batch_id)["status"] == "cancelling":
+            self._finish(batch_id, "cancelled")
+            return False
+        if spent >= batch["max_cost"]:
+            self._finish(batch_id, "budget")
+            return False
+        return True
+
+    def _finish(self, batch_id, status):
         self.store.update(batch_id, status=status, finished_at=self.clock())
 
     def cancel(self, batch_id):

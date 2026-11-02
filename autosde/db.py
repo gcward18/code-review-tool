@@ -119,9 +119,15 @@ class Store:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(agent_runs)")}
         if "model" not in columns:  # databases created before per-run models
             self.db.execute("ALTER TABLE agent_runs ADD COLUMN model TEXT")
+        if "plan_json" not in {row[1] for row in self.db.execute("PRAGMA table_info(reviews)")}:
+            # The saved plan, so approval can run later (or in another process) without memory.
+            self.db.execute("ALTER TABLE reviews ADD COLUMN plan_json TEXT")
 
     def _all(self, sql, *args):
-        return [dict(row) for row in self.db.execute(sql, args)]
+        rows = [dict(row) for row in self.db.execute(sql, args)]
+        for row in rows:
+            row.pop("plan_json", None)  # internal; read with plan()
+        return rows
 
     def project(self, path, name):
         self.db.execute(
@@ -156,7 +162,7 @@ class Store:
         outgoing = sum(c.output_tokens for c in result.calls)
         return incoming, outgoing, round((incoming * input_price + outgoing * output_price) / 1e6, 6)
 
-    def save_plan(self, review_id, result, files, *, input_price, output_price):
+    def save_plan(self, review_id, result, files, *, input_price, output_price, record=None):
         """Store the coordinator call and the per-file plan; await approval."""
         agent_of = {p: agent for agent, item in result.plan.items() for p in item["files"]}
         incoming, outgoing, cost = self._totals(result, input_price, output_price)
@@ -171,13 +177,21 @@ class Store:
                 )
             self.db.execute(
                 "UPDATE reviews SET status = 'awaiting_approval', input_tokens = ?,"
-                " output_tokens = ?, cost_usd = ? WHERE id = ?",
-                (incoming, outgoing, cost, review_id),
+                " output_tokens = ?, cost_usd = ?, plan_json = ? WHERE id = ?",
+                (incoming, outgoing, cost, json.dumps(record) if record else None, review_id),
             )
             self.db.execute("COMMIT")
         except BaseException:
             self.db.execute("ROLLBACK")
             raise
+
+    def plan(self, review_id):
+        """The saved plan record of a review awaiting approval, or None."""
+        row = self.db.execute("SELECT plan_json FROM reviews WHERE id = ?", (review_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    def set_files_changed(self, review_id, count):
+        self.db.execute("UPDATE reviews SET files_changed = ? WHERE id = ?", (count, review_id))
 
     def mark_running(self, review_id):
         self.db.execute("UPDATE reviews SET status = 'running' WHERE id = ?", (review_id,))

@@ -207,8 +207,10 @@ KEY_PROVIDER = None
 WORKSPACE_ID = None
 
 
-def traced(model, *, review_id, name, scan, config=None, environ=os.environ, opener=None):
-    """Return `model` wrapped for LangSmith when enabled and a key is set, else unchanged."""
+def traced(model, *, review_id, name, scan, config=None, environ=os.environ, opener=None, root=None):
+    """Return `model` wrapped for LangSmith when enabled and a key is set, else unchanged.
+
+    `root` (a {"id", "order"} from an earlier call) continues that trace instead of starting one."""
     config = config or load_config()
     settings = config.get("langsmith") or {}
     key = environ.get("LANGSMITH_API_KEY") or (KEY_PROVIDER() if KEY_PROVIDER else None)
@@ -222,8 +224,13 @@ def traced(model, *, review_id, name, scan, config=None, environ=os.environ, ope
         return model
     tracer = Tracer(key, project=settings["project"], endpoint=settings["endpoint"],
                     workspace_id=workspace_id, scan=scan, opener=opener)
-    root = tracer.start(name, {"review_id": review_id, "model": model.model})
+    root = root or tracer.start(name, {"review_id": review_id, "model": model.model})
     return TracedModel(model, tracer, root, config)
+
+
+def root_of(model):
+    """The trace root of a traced model (to continue it later), or None."""
+    return dict(model.root) if isinstance(model, TracedModel) else None
 
 
 def finish(model, outputs):

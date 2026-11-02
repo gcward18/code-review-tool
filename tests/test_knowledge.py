@@ -246,7 +246,7 @@ class KnowledgeApiTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        scan = patch("autosde.web.scanner", return_value=clean_scan)
+        scan = patch("autosde.app.scanner", return_value=clean_scan)
         scan.start()
         self.addCleanup(scan.stop)
 
@@ -285,7 +285,7 @@ class KnowledgeApiTests(unittest.TestCase):
 
         from autosde.scan import ScanUnavailable
 
-        with patch("autosde.web.scanner", side_effect=ScanUnavailable("gitleaks missing")):
+        with patch("autosde.app.scanner", side_effect=ScanUnavailable("gitleaks missing")):
             base = self.call("/api/knowledge", {"name": "no-scanner"})
             self.assertEqual(self.call("/api/knowledge")[0]["name"], "no-scanner")
             self.call(f"/api/knowledge/{base['id']}/documents",

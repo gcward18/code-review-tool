@@ -131,8 +131,10 @@ class WebTests(unittest.TestCase):
         everything = self.post(f"/api/reviews/{review_id}/estimate",
                                {"files": ["calculator.py", "package-lock.json"]})
         self.assertGreater(everything["input_tokens"], plan["estimate"]["input_tokens"])
-        self.post(f"/api/reviews/{review_id}/approve", {"files": ["calculator.py"]})
-        review = self.wait(review_id, "completed")
+        # Approval reads and scans the files again; the plan itself was saved with the review.
+        with patch("autosde.review.scanner", return_value=clean_scan):
+            self.post(f"/api/reviews/{review_id}/approve", {"files": ["calculator.py"]})
+            review = self.wait(review_id, "completed")
         self.assertEqual(review["findings"][0]["title"], "Total is overwritten")
         self.assertEqual(review["range_spec"], f"{base}..HEAD")
         with urllib.request.urlopen(f"{self.url}/api/reviews/{review_id}.sarif", timeout=10) as r:
@@ -152,7 +154,7 @@ class WebTests(unittest.TestCase):
 
     def test_project_chat_round_trip(self):
         project = self.store.project(self.repo, "calculator")
-        with patch("autosde.web.scanner", return_value=clean_scan):
+        with patch("autosde.app.scanner", return_value=clean_scan):
             reply = self.post(f"/api/projects/{project}/chat", {"message": "Summarize"})
         self.assertEqual(reply["messages"][-1]["content"], "One finding.")
         self.assertEqual(len(self.get(f"/api/projects/{project}/chat")["messages"]), 2)
@@ -162,7 +164,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.status(error), 403)
 
     def test_home_chat_round_trip(self):
-        with patch("autosde.web.scanner", return_value=clean_scan):
+        with patch("autosde.app.scanner", return_value=clean_scan):
             reply = self.post("/api/chat", {"message": "Which repos are here?"})
         self.assertEqual(reply["messages"][-1]["content"], "One finding.")
         self.assertEqual(len(self.get("/api/chat")["messages"]), 2)
@@ -181,10 +183,17 @@ class WebTests(unittest.TestCase):
         orphan = prepare(self.repo, "HEAD~1..HEAD", store=self.store, model=self.scripted(),
                          settings=self.settings, scan=clean_scan)  # e.g. after a restart
         self.assertEqual(self.get(f"/api/reviews/{orphan.review_id}")["status"], "expired")
-        handing_over = prepare(self.repo, "HEAD~1..HEAD", store=self.store, model=self.scripted(),
-                               settings=self.settings, scan=clean_scan)
-        self.app.planning.add(handing_over.review_id)
-        self.assertEqual(self.get(f"/api/reviews/{handing_over.review_id}")["status"], "planning")
+        # A plan survives a restart: a fresh App (no memory of it) can still approve it.
+        with patch("autosde.review.scanner", return_value=clean_scan):
+            planned = self.post("/api/reviews", {"repo": str(self.repo), "from": "HEAD", "to": base})["id"]
+            self.wait(planned, "awaiting_approval")
+            from autosde.jobs import InlineJobs
+            restarted = App(self.store, self.settings, model_factory=self.scripted, browse_root=self.tmp.name)
+            restarted.jobs = InlineJobs(restarted.run_job)
+            self.assertEqual(restarted.review(planned)["status"], "awaiting_approval")
+            self.assertEqual(restarted.decide(planned, {"files": ["calculator.py"]}, approved=True)["status"],
+                             "running")
+        self.assertEqual(self.store.review(planned)["status"], "completed")
 
     def test_posts_need_token_json_same_origin_and_offered_refs(self):
         base = git(self.repo, "rev-parse", "HEAD~1")

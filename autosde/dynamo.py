@@ -198,7 +198,9 @@ class DynamoStore:
         outgoing = sum(c.output_tokens for c in result.calls)
         return incoming, outgoing, round((incoming * input_price + outgoing * output_price) / 1e6, 6)
 
-    def save_plan(self, review_id, result, files, *, input_price, output_price):
+    def save_plan(self, review_id, result, files, *, input_price, output_price, record=None):
+        import json
+
         agent_of = {p: agent for agent, item in result.plan.items() for p in item["files"]}
         incoming, outgoing, cost = self._totals(result, input_price, output_price)
         self._calls(review_id, result)
@@ -208,7 +210,17 @@ class DynamoStore:
                     "PK": f"REVIEW#{review_id}", "SK": f"FILE#{f.path}", "path": f.path,
                     "agent": agent_of.get(f.path), "flag": result.flagged.get(f.path), "skipped": f.skipped}))
         self.t.update(f"REVIEW#{review_id}", "META", {"status": "awaiting_approval", "input_tokens": incoming,
-                                                      "output_tokens": outgoing, "cost_usd": cost})
+                                                      "output_tokens": outgoing, "cost_usd": cost,
+                                                      "plan_json": json.dumps(record) if record else None})
+
+    def plan(self, review_id):
+        import json
+
+        item = self.t.get(f"REVIEW#{review_id}", "META")
+        return json.loads(item["plan_json"]) if item and item.get("plan_json") else None
+
+    def set_files_changed(self, review_id, count):
+        self.t.update(f"REVIEW#{review_id}", "META", {"files_changed": count})
 
     def mark_running(self, review_id):
         self.t.update(f"REVIEW#{review_id}", "META", {"status": "running"})
@@ -289,7 +301,7 @@ class DynamoStore:
 
     def _review_row(self, item, cache):
         project = self._project(item["project_id"], cache) or {}
-        row = {**self.REVIEW_DEFAULTS, **_clean(item, "runs")}
+        row = {**self.REVIEW_DEFAULTS, **_clean(item, "runs", "plan_json")}
         row.update(project=project.get("name"), project_path=project.get("path"))
         return row
 

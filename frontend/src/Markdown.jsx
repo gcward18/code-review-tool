@@ -85,6 +85,11 @@ function inline(text, key = "i") {
   return out;
 }
 
+// Inline formatting only (code, bold, italic, links), for titles and one-line labels.
+export function MarkdownInline({ text }) {
+  return <>{inline(text || "", "x")}</>;
+}
+
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 
 // Lists nest by indentation: deeper items become a child list of the item above.

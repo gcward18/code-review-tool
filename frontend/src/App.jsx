@@ -4,7 +4,7 @@ import { routeHref } from "./routes.js";
 import { api } from "./api.js";
 import Agents from "./Agents.jsx";
 import Knowledge from "./Knowledge.jsx";
-import Markdown from "./Markdown.jsx";
+import Markdown, { MarkdownInline } from "./Markdown.jsx";
 import Workspace, { Panel } from "./Workspace.jsx";
 
 const THEMES = ["light", "dark", "dracula"];
@@ -378,7 +378,7 @@ function Review({ id, onProject, onContext, showAgents }) {
           {review.files_changed} files · {review.input_tokens}/{review.output_tokens} tokens ·{" "}
           {money(review.cost_usd)} · <a href={`/api/reviews/${review.id}.sarif`}>SARIF</a>
         </p>
-        {review.summary && <p>{review.summary}</p>}
+        {review.summary && <Markdown text={review.summary} />}
         {review.error && <p className="error">{review.error}</p>}
         {["planning", "running"].includes(review.status) && (
           <p className="muted">{review.status === "planning" ? "Planning…" : "The team is reviewing…"}</p>
@@ -389,11 +389,11 @@ function Review({ id, onProject, onContext, showAgents }) {
       {kept.map((f) => (
         <div className="card finding" key={f.id}>
           <p>
-            <span className={`badge sev-${f.severity}`}>{f.severity}</span> <b>{f.title}</b>{" "}
+            <span className={`badge sev-${f.severity}`}>{f.severity}</span> <b><MarkdownInline text={f.title} /></b>{" "}
             <span className="muted">· {f.agent}</span>
           </p>
           <p><code>{f.file}:{f.start_line}{f.end_line !== f.start_line ? `–${f.end_line}` : ""}</code></p>
-          <p>{f.description}</p>
+          <Markdown text={f.description} />
           <p><b>Fix</b></p>
           <Fix text={f.recommendation} />
         </div>
@@ -403,7 +403,7 @@ function Review({ id, onProject, onContext, showAgents }) {
           <summary>Rejected by the aggregator ({rejected.length})</summary>
           {rejected.map((f) => (
             <p key={f.id} className="small">
-              <code>{f.file}:{f.start_line}</code> {f.title} — <span className="muted">{f.rejection}</span>
+              <code>{f.file}:{f.start_line}</code> <MarkdownInline text={f.title} /> — <span className="muted"><MarkdownInline text={f.rejection} /></span>
             </p>
           ))}
         </details>
@@ -435,7 +435,7 @@ function Review({ id, onProject, onContext, showAgents }) {
         <details className="card">
           <summary>Limits</summary>
           <ul className="small">
-            {review.limitations.split("\n").map((l) => <li key={l}>{l}</li>)}
+            {review.limitations.split("\n").map((l) => <li key={l}><MarkdownInline text={l} /></li>)}
           </ul>
         </details>
       )}

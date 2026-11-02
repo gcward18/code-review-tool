@@ -4,7 +4,7 @@ import { parseRoute, routeHref } from "./routes.js";
 
 test("bookmarks round-trip every page and focused resource", () => {
   for (const view of [
-    { kind: "home" }, { kind: "settings" },
+    { kind: "home" }, { kind: "settings" }, { kind: "help" },
     { kind: "agents", agent: "typescript" }, { kind: "agents", agent: "custom agent/#?" },
     { kind: "knowledge", base: 12 }, { kind: "knowledge", base: null },
     { kind: "review", id: 42 }, { kind: "project", id: 9 },

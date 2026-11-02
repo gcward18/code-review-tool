@@ -224,6 +224,19 @@ Pages and selections have bookmarkable URLs: `#/agents/python`, `#/knowledge/1`,
 
 Only committed history is reviewed; uncommitted edits are ignored.
 
+## Help, videos and the first-visit tour
+
+The **Help** page has three short videos (running a review, configuring agents, settings and layout) and answers to common questions. On a first visit a short walkthrough points out the main areas; **Skip tour** or **Done** hides it for good in that browser, and **Show the tour again** (Help or Settings) replays it.
+
+The videos are recorded with Playwright against a demo server with a sample repository and a scripted model, so recordings never show your projects or settings and cost nothing:
+
+```sh
+cd frontend
+npm run build
+npm run record-docs -- --gitleaks "$(command -v gitleaks)"   # writes src/docs/*.webm and *.jpg
+npm run build                                                # bundles the new videos
+```
+
 ## The command line
 
 ```sh

@@ -3,6 +3,8 @@ import useRoute from "./useRoute.js";
 import { routeHref } from "./routes.js";
 import { api, downloadSarif } from "./api.js";
 import Agents from "./Agents.jsx";
+import Help from "./Help.jsx";
+import Tour, { tourDone } from "./Tour.jsx";
 import Knowledge from "./Knowledge.jsx";
 import BatchPanel from "./Batch.jsx";
 import ChangedFiles from "./Diff.jsx";
@@ -185,7 +187,7 @@ function Workspaces({ selected, onSelect, showBlocked, refresh, cloud }) {
   );
 }
 
-function Settings({ theme, setTheme, prefs, setPrefs, onRescan }) {
+function Settings({ theme, setTheme, prefs, setPrefs, onRescan, onTour }) {
   return (
     <div className="card">
       <h2>Settings</h2>
@@ -211,7 +213,10 @@ function Settings({ theme, setTheme, prefs, setPrefs, onRescan }) {
         a blocked project, allow access in System Settings → Privacy &amp; Security → Files and
         Folders, then rescan.
       </p>
-      <button className="secondary" onClick={onRescan}>Rescan repositories</button>
+      <div className="actions">
+        <button className="secondary" onClick={onRescan}>Rescan repositories</button>
+        <button className="secondary" onClick={onTour}>Show the tour again</button>
+      </div>
     </div>
   );
 }
@@ -725,6 +730,7 @@ function Crumbs({ view, canGoBack, onBack, go }) {
   if (view.kind === "review") trail.push({ label: view.number ? `Review #${view.number}` : "Review" });
   if (view.kind === "agents") trail.push({ label: "Agents" });
   if (view.kind === "settings") trail.push({ label: "Settings" });
+  if (view.kind === "help") trail.push({ label: "Help" });
   if (view.kind === "knowledge") trail.push({ label: "Knowledge" });
   return (
     <nav className="crumbs">
@@ -752,7 +758,11 @@ export default function App({ onSignOut }) {
   const [error, setError] = useState("");
   const { view, go: navigate, context } = useRoute();
   const [drawer, setDrawer] = useState(false);
+  const [touring, setTouring] = useState(false);
   useEffect(() => setDrawer(false), [view.kind, view.repo, view.id]);
+  useEffect(() => {  // first visit: offer the walkthrough once the app has loaded
+    if (session && !tourDone()) setTouring(true);
+  }, [session]);
 
   useEffect(() => {
     api.session().then(setSession).catch((e) => setError(e.message));
@@ -777,9 +787,10 @@ export default function App({ onSignOut }) {
           {session?.user?.email && <span className="small muted">{session.user.email}</span>}
           <button className="secondary" onClick={onSignOut}>Sign out</button>
         </>}
-        <a href={routeHref({ kind: "agents" })} className={view.kind === "agents" ? "active" : ""}>Agents</a>
-        <a href={routeHref({ kind: "knowledge" })} className={view.kind === "knowledge" ? "active" : ""}>Knowledge</a>
-        <a href={routeHref({ kind: "settings" })} className={view.kind === "settings" ? "active" : ""}>Settings</a>
+        <a data-tour="agents" href={routeHref({ kind: "agents" })} className={view.kind === "agents" ? "active" : ""}>Agents</a>
+        <a data-tour="knowledge" href={routeHref({ kind: "knowledge" })} className={view.kind === "knowledge" ? "active" : ""}>Knowledge</a>
+        <a data-tour="settings" href={routeHref({ kind: "settings" })} className={view.kind === "settings" ? "active" : ""}>Settings</a>
+        <a data-tour="help" href={routeHref({ kind: "help" })} className={view.kind === "help" ? "active" : ""}>Help</a>
       </header>
       <aside className={drawer ? "open" : ""}>
         {session && <Workspaces selected={view.repo} showBlocked={prefs.showBlocked} refresh={scan} cloud={session.cloud}
@@ -804,11 +815,13 @@ export default function App({ onSignOut }) {
         {session && view.kind === "knowledge" && <Knowledge selected={view.base} onSelect={(base, options) => go({ kind: "knowledge", base }, options)} />}
         {view.kind === "settings" && (
           <Settings theme={theme} setTheme={setTheme} prefs={prefs} setPrefs={setPrefs}
-            onRescan={() => setScan((n) => n + 1)} />
+            onRescan={() => setScan((n) => n + 1)} onTour={() => setTouring(true)} />
         )}
+        {view.kind === "help" && <Help onTour={() => setTouring(true)} />}
         {session && view.kind === "agents" && <Agents defaultModel={session.model} selected={view.agent} onSelect={(agent) => go({ kind: "agents", agent })} />}
         {session && view.kind === "project" && <ProjectRedirect key={view.id} id={view.id} go={go} />}
       </main>
+      {touring && <Tour onClose={() => setTouring(false)} />}
     </div>
   );
 }

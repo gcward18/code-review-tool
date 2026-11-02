@@ -387,3 +387,26 @@ form.rename input { padding: 4px 8px; }
 .gh-remove { padding: 0 6px; font-size: 11px; opacity: 0; }
 .node:hover .gh-remove { opacity: 1; }
 .gh-link { text-decoration: none; }
+
+/* Help page */
+.help-hero p { margin: 0; }
+.video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.video-card { margin: 0; padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.video-card video { width: 100%; aspect-ratio: 16 / 10; background: var(--code-bg); display: block; }
+.video-card figcaption { padding: 12px 14px; }
+.video-card ol { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+.faq details { border-top: 1px solid var(--line); padding: 10px 0; }
+.faq details:first-of-type { border-top: 0; }
+.faq summary { font-weight: 600; }
+.faq p { margin: 8px 0 0; color: var(--text); }
+main:has(.help) > * { max-width: 1100px; }
+
+/* First-visit walkthrough */
+.tour { position: fixed; inset: 0; z-index: 100; }
+.tour-shade { position: fixed; inset: 0; background: rgba(10, 8, 20, .55); }
+.tour-spot { position: fixed; border-radius: 12px; box-shadow: 0 0 0 9999px rgba(10, 8, 20, .55);
+  outline: 2px solid var(--accent); transition: all .25s ease; pointer-events: none; }
+.tour-card { position: fixed; width: 360px; max-width: calc(100vw - 32px); background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); }
+.tour-card h3 { margin: 4px 0 6px; }
+.tour-card p { margin: 0 0 14px; }

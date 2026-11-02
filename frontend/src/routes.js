@@ -15,7 +15,7 @@ export function parseRoute(hash = "") {
       return { kind, id: Number(value) };
     }
     if (kind === "repo" && !value && params.get("path")) return { kind, repo: params.get("path") };
-    if (["home", "settings"].includes(kind) && !value) return { kind };
+    if (["home", "settings", "help"].includes(kind) && !value) return { kind };
   } catch { /* A malformed link should not crash the application. */ }
   return { kind: "not-found" };
 }
@@ -26,6 +26,7 @@ export function routeHref(view) {
     case "agents": return `#/agents${view.agent ? `/${encodeURIComponent(view.agent)}` : ""}`;
     case "knowledge": return `#/knowledge${view.base ? `/${view.base}` : ""}`;
     case "settings": return "#/settings";
+    case "help": return "#/help";
     case "review": case "project": return `#/${view.kind}/${view.id}`;
     case "repo": return `#/repo?${new URLSearchParams({ path: view.repo })}`;
     default: return "#/not-found";

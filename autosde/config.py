@@ -21,6 +21,9 @@ class Settings:
     secret_id: str | None = None
     aws_profile: str | None = None
     aws_region: str = "us-east-1"
+    # AWS only: Secrets Manager ids for the LangSmith key and a read-only GitHub token.
+    langsmith_secret_id: str | None = None
+    github_secret_id: str | None = None
     max_file_bytes: int = 64_000
     max_total_bytes: int = 400_000
 

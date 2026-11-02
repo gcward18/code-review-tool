@@ -202,15 +202,20 @@ class TracedModel:
             _warn("trace incomplete: " + ", ".join(sorted(set(self.tracer.errors))))
 
 
+# A callable returning the LangSmith key from Secrets Manager (set by autosde.cloud).
+KEY_PROVIDER = None
+WORKSPACE_ID = None
+
+
 def traced(model, *, review_id, name, scan, config=None, environ=os.environ, opener=None):
     """Return `model` wrapped for LangSmith when enabled and a key is set, else unchanged."""
     config = config or load_config()
     settings = config.get("langsmith") or {}
-    key = environ.get("LANGSMITH_API_KEY")
+    key = environ.get("LANGSMITH_API_KEY") or (KEY_PROVIDER() if KEY_PROVIDER else None)
     if not settings.get("enabled") or not key:
         return model
     try:
-        workspace_id = environ.get("LANGSMITH_WORKSPACE_ID") or workspace(
+        workspace_id = environ.get("LANGSMITH_WORKSPACE_ID") or WORKSPACE_ID or workspace(
             key, settings["endpoint"], opener)
     except RuntimeError as error:
         _warn(f"tracing skipped: {error}")

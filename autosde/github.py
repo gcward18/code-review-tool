@@ -63,8 +63,10 @@ def _check_ref(ref):
 class Client:
     """GET requests against the GitHub API: via `gh api` when available, else anonymous HTTPS."""
 
-    def __init__(self, *, gh=None, opener=None):
-        self.gh = shutil.which("gh") if gh is None else gh
+    def __init__(self, *, gh=None, opener=None, token=None):
+        # token: a callable returning a GitHub token (AWS: Secrets Manager); it replaces `gh`.
+        self.token = token
+        self.gh = None if token else (shutil.which("gh") if gh is None else gh)
         self._authed = None
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -88,8 +90,10 @@ class Client:
                 raise GitHubError("GitHub request failed.")
             body = result.stdout
         else:
-            request = urllib.request.Request(f"{API}/{path}", headers={
-                "Accept": accept, "User-Agent": "autosde", "X-GitHub-Api-Version": "2022-11-28"})
+            headers = {"Accept": accept, "User-Agent": "autosde", "X-GitHub-Api-Version": "2022-11-28"}
+            if self.token:
+                headers["Authorization"] = f"Bearer {self.token()}"
+            request = urllib.request.Request(f"{API}/{path}", headers=headers)
             try:
                 with self.opener.open(request, timeout=60) as response:
                     body = response.read(20_000_000)

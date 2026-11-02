@@ -106,7 +106,7 @@ VERDICT_SCHEMA = {
 
 def prompt(name, **values):
     """Prompt files are re-read on every call, so edits apply immediately."""
-    text = (agents.PROMPTS / name).read_text()
+    text = agents.read_text(name)
     for key, value in values.items():
         text = text.replace("{" + key + "}", value)
     return text
@@ -287,10 +287,8 @@ class Team:
         files = [by_path[p] for p in assignment["files"]]
         call = Call(role="specialist", agent=agent, files=[f.path for f in files],
                     focus=assignment["focus"])
-        focus_file = agents.PROMPTS / "focus" / f"{agent}.md"
         focus = " ".join(
-            part for part in (assignment["focus"], focus_file.read_text().strip() if focus_file.exists() else "")
-            if part
+            part for part in (assignment["focus"], agents.read_text(f"focus/{agent}.md").strip()) if part
         )
         body = "\n\n".join(
             f"=== {f.path} (head) ===\n{numbered(f.head)}\n=== {f.path} (diff) ===\n{f.diff}"

@@ -116,7 +116,20 @@ def validate(config):
     return clean
 
 
+# Where agent settings and prompts live: files next to this module (None, the local app) or
+# a store with get_config/put_config/get_prompt/put_prompt (DynamoDB in AWS).
+BACKEND = None
+# Whether a LangSmith key is available beyond the environment (set by autosde.cloud).
+LANGSMITH_KEY_AVAILABLE = None
+
+
 def load_config(path=None):
+    if BACKEND is not None and path is None:
+        try:
+            saved = BACKEND.get_config()
+            return validate(saved) if saved else defaults()
+        except (ValueError, ConfigError):
+            return defaults()
     try:
         return validate(json.loads(Path(path or PROMPTS / CONFIG).read_text()))
     except FileNotFoundError:
@@ -127,8 +140,22 @@ def load_config(path=None):
 
 def save_config(config, path=None):
     clean = validate(config)
-    Path(path or PROMPTS / CONFIG).write_text(json.dumps(clean, indent=2) + "\n")
+    if BACKEND is not None and path is None:
+        BACKEND.put_config(clean)
+    else:
+        Path(path or PROMPTS / CONFIG).write_text(json.dumps(clean, indent=2) + "\n")
     return clean
+
+
+def read_text(name):
+    """A prompt file by its name under prompts/ (e.g. `specialist.md`, `focus/python.md`).
+    In AWS the stored version wins; the bundled file is the default."""
+    if BACKEND is not None:
+        saved = BACKEND.get_prompt(name)
+        if saved is not None:
+            return saved
+    path = PROMPTS / name
+    return path.read_text() if path.exists() else ""
 
 
 def specialists(config):
@@ -149,8 +176,7 @@ def prompt_file(kind, agent=None):
 
 
 def read_prompt(kind, agent=None):
-    path = prompt_file(kind, agent)
-    return path.read_text() if path.exists() else ""
+    return read_text(prompt_file(kind, agent).relative_to(PROMPTS).as_posix())
 
 
 def write_prompt(kind, text, agent=None):
@@ -161,8 +187,12 @@ def write_prompt(kind, text, agent=None):
     if kind == "specialist" and "{agent}" not in text:
         raise ConfigError("The specialist prompt must keep the {agent} placeholder.")
     path = prompt_file(kind, agent)
+    text = text if text.endswith("\n") else text + "\n"
+    if BACKEND is not None:
+        BACKEND.put_prompt(path.relative_to(PROMPTS).as_posix(), text)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text if text.endswith("\n") else text + "\n")
+    path.write_text(text)
 
 
 def snapshot():
@@ -170,7 +200,8 @@ def snapshot():
     config = load_config()
     return {
         "config": config,
-        "langsmith_key": bool(os.environ.get("LANGSMITH_API_KEY")),
+        "langsmith_key": bool(os.environ.get("LANGSMITH_API_KEY"))
+                         or bool(LANGSMITH_KEY_AVAILABLE and LANGSMITH_KEY_AVAILABLE()),
         "prompts": {kind: read_prompt(kind) for kind in SYSTEM_PROMPTS},
         "focus": {name: read_prompt("focus", name) for name in config["agents"]
                   if name not in CORE},

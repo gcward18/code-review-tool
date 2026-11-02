@@ -699,3 +699,45 @@ class DynamoRemoteStore:
         if item:
             self.t.delete(f"REMOTEPATH#{item['path']}", "UNIQUE")
         self.t.delete(f"REMOTE#{remote_id}", "META")
+
+
+# --- agent settings and prompts --------------------------------------------------
+
+class DynamoConfigStore:
+    """Agent settings and prompts, edited from the Agents page, with every version kept.
+
+        CONFIG#agents     CURRENT / V#<n>      settings JSON
+        PROMPT#<name>     CURRENT / V#<n>      prompt text (e.g. specialist.md, focus/python.md)
+    """
+
+    def __init__(self, table, *, clock=time.time):
+        self.t = Table(table)
+        self.clock = clock
+
+    def _save(self, pk, field, value):
+        version = self.t.update(pk, "CURRENT", {field: value, "saved_at": self.clock()},
+                                add={"version": 1})["version"]
+        self.t.put({"PK": pk, "SK": f"V#{version:06d}", field: value, "saved_at": self.clock()})
+        return version
+
+    def get_config(self):
+        import json
+
+        item = self.t.get("CONFIG#agents", "CURRENT")
+        return json.loads(item["json"]) if item else None
+
+    def put_config(self, config):
+        import json
+
+        return self._save("CONFIG#agents", "json", json.dumps(config))
+
+    def get_prompt(self, name):
+        item = self.t.get(f"PROMPT#{name}", "CURRENT")
+        return item["text"] if item else None
+
+    def put_prompt(self, name, text):
+        return self._save(f"PROMPT#{name}", "text", text)
+
+    def versions(self, name=None):
+        pk = f"PROMPT#{name}" if name else "CONFIG#agents"
+        return [{"version": int(i["SK"][2:]), "saved_at": i["saved_at"]} for i in self.t.children(pk, "V#")]

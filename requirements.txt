@@ -1,6 +1,6 @@
 appnope==1.0.0
 asttokens==3.0.2
--e git+ssh://git@github.com/gcward18/autosde.git@d24edfac5e1ad54aceaf3ddfc202289675787e3c#egg=autosde
+-e .
 boto3==1.43.123
 botocore==1.43.123
 comm==0.2.3

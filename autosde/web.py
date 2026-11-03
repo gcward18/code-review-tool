@@ -19,7 +19,7 @@ STATIC = Path(__file__).parent / "static"
 
 def handler_for(app):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "AutoSDE"
+        server_version = "ReviewCrew"
         sys_version = ""
 
         def log_message(self, *args):

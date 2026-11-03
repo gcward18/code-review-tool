@@ -1,6 +1,6 @@
 # CDK infrastructure
 
-Read the repository AGENTS.md first. This folder owns the AWS deployment for the local AutoSDE codebase; it does not modify the older Code Review Service stacks.
+Read the repository AGENTS.md first. This folder owns the AWS deployment for the local Review Crew codebase; it does not modify the older Code Review Service stacks.
 
 - `bin/`: application entry point. `lib/`: stack and validated public deployment configuration. `tests/`: Vitest assertions against synthesized templates. `scripts/`: CDK CLI wrapper.
 - Lambda assets come from `../scripts/build_lambda.py` and are verified before every synthesis. Runtime source, scanner version and every wheel are hash-pinned or recorded in the build manifest. Never bundle `.env`, `agents.json`, databases or a workstation binary.

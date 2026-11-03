@@ -25,7 +25,7 @@ export default function Bootstrap() {
       } catch (error) {
         update({ status: "signed-out", auth, error: error instanceof SignInRequired ? "" : error.message });
       }
-    })().catch(() => update({ status: "error", error: "Could not start AutoSDE. Check config.json and reload." }));
+    })().catch(() => update({ status: "error", error: "Could not start Review Crew. Check config.json and reload." }));
     return () => { active = false; };
   }, []);
 
@@ -37,7 +37,7 @@ export default function Bootstrap() {
   if (state.status === "ready") return <App onSignOut={state.auth ? () => state.auth.signOut() : undefined} />;
   return (
     <main className="card" style={{ maxWidth: 480, margin: "12vh auto" }}>
-      <h1>AutoSDE</h1>
+      <h1>Review Crew</h1>
       {state.status === "loading" ? <p role="status">Loading…</p> : <>
         {state.error && <p className="error" role="alert">{state.error}</p>}
         {state.status === "signed-out" ? <>

@@ -1,7 +1,7 @@
 """Review GitHub repositories straight from the GitHub API, with no clone.
 
 Requests go through the `gh` CLI when it is installed and logged in, so private
-repositories work and AutoSDE never sees a token. Without `gh`, public repositories are
+repositories work and Review Crew never sees a token. Without `gh`, public repositories are
 read anonymously over HTTPS (GitHub allows about 60 anonymous requests an hour).
 
 A GitHub project is stored with the path `https://github.com/<owner>/<name>`.

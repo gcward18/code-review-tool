@@ -1,6 +1,6 @@
 # Knowledge bases and retrieval (RAG)
 
-Knowledge bases give agents reference material they can't infer from a diff: team conventions, API contracts, architecture notes, runbooks, past incident write-ups. You upload documents on the **Knowledge** page, AutoSDE chunks and embeds them into the local SQLite database, and agents you attach a knowledge base to receive the most relevant passages with every call.
+Knowledge bases give agents reference material they can't infer from a diff: team conventions, API contracts, architecture notes, runbooks, past incident write-ups. You upload documents on the **Knowledge** page, Review Crew chunks and embeds them into the local SQLite database, and agents you attach a knowledge base to receive the most relevant passages with every call.
 
 Everything stays in `~/.autosde/autosde.db`. The only network calls are to the OpenAI embeddings API, and every document is gitleaks-scanned first; a document with a possible secret is refused and never embedded.
 
@@ -62,7 +62,7 @@ The goal is chunks that each answer one kind of question and still make sense on
 
 ## 4. Retrieval: hybrid search with rank fusion
 
-Dense vectors are good at meaning ("money rounding" finds "use Decimal for currency"); keywords are good at exact identifiers (`calculate_total`, `ERR_TIMEOUT`) that embeddings blur. AutoSDE runs both and fuses them.
+Dense vectors are good at meaning ("money rounding" finds "use Decimal for currency"); keywords are good at exact identifiers (`calculate_total`, `ERR_TIMEOUT`) that embeddings blur. Review Crew runs both and fuses them.
 
 1. **Query.** For a specialist: its file paths plus the changed lines of its diff (up to 4,000 characters). For the chat agent: your question.
 2. **Vector rank.** The query is embedded with each knowledge base's model, then scored against every chunk by dot product, keeping the top `max(30, 5 × top K)` candidates.

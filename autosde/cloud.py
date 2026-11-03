@@ -1,4 +1,4 @@
-"""AutoSDE on AWS: settings from SSM Parameter Store, secrets from Secrets Manager, and the
+"""Review Crew on AWS: settings from SSM Parameter Store, secrets from Secrets Manager, and the
 DynamoDB/S3 backends wired in place of the local SQLite and files.
 
 Parameters live under a prefix such as /autosde/dev/ (model, input_price, output_price,

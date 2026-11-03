@@ -1,4 +1,4 @@
-"""A self-contained AutoSDE demo for screen recordings (scripts/record_docs.mjs).
+"""A self-contained Review Crew demo for screen recordings (scripts/record_docs.mjs).
 
 Runs the real local app on a throwaway home folder with a sample repository, a scripted
 model (no API key, no cost) and in-memory agent settings, so recordings never show or

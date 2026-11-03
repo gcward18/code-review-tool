@@ -1,4 +1,4 @@
-# AutoSDE
+# Review Crew
 
 A code reviewer for your git repositories, running locally or on AWS. A small team of AI agents reviews a commit range, you approve which files the specialists receive, and every review is saved for browsing, querying and chat.
 
@@ -213,14 +213,14 @@ autosde serve                      # open http://127.0.0.1:8765/
 - **Sidebar:** your repositories, found under your home folder. **Recent** lists reviewed projects, **Available** lists the rest, and one search box filters both. Folders macOS hasn't approved for your terminal are hidden; turn on **Settings → Show blocked folders** to see them. ☰ collapses the sidebar.
 - **Home:** a chat about all your projects (branches, recent commits, file types and review history), next to your projects and recent reviews.
 - **Project page:** four panels. On the left, pick a commit range (**From** is the newer end, **To** lists only older commits) and chat about the project's review history. On the right, its reviews and, if enabled, the agents that ran. Drag the dividers to resize, and use ⤢ to make any panel full screen.
-- **GitHub repositories:** **+ Add GitHub repository** in the sidebar adds `owner/name` (or its URL). Nothing is cloned: branches, commits, diffs and file contents are read from the GitHub API. Requests go through the `gh` CLI when it's logged in, so private repositories work and AutoSDE never sees a token; without `gh`, public repositories are read anonymously (about 60 requests an hour).
+- **GitHub repositories:** **+ Add GitHub repository** in the sidebar adds `owner/name` (or its URL). Nothing is cloned: branches, commits, diffs and file contents are read from the GitHub API. Requests go through the `gh` CLI when it's logged in, so private repositories work and Review Crew never sees a token; without `gh`, public repositories are read anonymously (about 60 requests an hour).
 - **History batches:** on any repository page, the **History batch** tab reviews many commits in one approved run: every commit, merge commits only (one per merged PR), every Nth commit, or the latest N. Planning is local and free and shows each commit with an estimate; you approve once with a cost cap, and reviews run one at a time in the background with progress and Cancel.
 - **Review page:** the plan with a checkbox per file and an estimated cost; after approval, findings with their diffs, the findings the aggregator rejected and why, and **Changed files**: every file in the range with its diff, five lines of context around each change, and the rest folded (expand 20 lines at a time or all). Diffs are read from the repository when you open them; the database stores no source code.
 - **Knowledge:** create knowledge bases, upload documents (PDF, Markdown, text, code, HTML, JSON, CSV, .docx), inspect their chunks, tune the chunking and retrieval strategy, and test retrieval. See [docs/RAG.md](docs/RAG.md).
 - **Agents:** enable specialists, set file extensions, pick each agent's model from those your key can use, edit every prompt, and see run statistics.
 - **Settings:** theme (Light, Dark, Dracula), blocked folders, and whether agent runs appear on project and review pages.
 
-Pages and selections have bookmarkable URLs: `#/agents/python`, `#/knowledge/1`, `#/settings`, `#/review/3`, and `#/project/1`. Repository pages use `#/repo?path=…` with a URL-encoded absolute path. Copy the address bar to reopen the same view; refresh and browser Back/Forward preserve navigation. Home project names and review numbers are links you can open in another tab. These links refer to data on this local AutoSDE instance.
+Pages and selections have bookmarkable URLs: `#/agents/python`, `#/knowledge/1`, `#/settings`, `#/review/3`, and `#/project/1`. Repository pages use `#/repo?path=…` with a URL-encoded absolute path. Copy the address bar to reopen the same view; refresh and browser Back/Forward preserve navigation. Home project names and review numbers are links you can open in another tab. These links refer to data on this local Review Crew instance.
 
 Only committed history is reviewed; uncommitted edits are ignored.
 
@@ -272,7 +272,7 @@ Attach knowledge bases to agents on the Agents page, and each specialist receive
 
 ## LangSmith tracing
 
-Turn it on from the Agents page and export `LANGSMITH_API_KEY` before starting AutoSDE. Each review becomes one trace with a child run per agent call, containing the full prompt, the reviewed code and the reply. Untick "Trace this agent" to leave an agent out. Text gitleaks flags is withheld.
+Turn it on from the Agents page and export `LANGSMITH_API_KEY` before starting Review Crew. Each review becomes one trace with a child run per agent call, containing the full prompt, the reviewed code and the reply. Untick "Trace this agent" to leave an agent out. Text gitleaks flags is withheld.
 
 ## Data
 

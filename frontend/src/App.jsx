@@ -124,10 +124,10 @@ function GitHubList({ items, selected, onSelect, onChanged }) {
               <div className={`node ${selected === r.path ? "selected" : ""} ${ready ? "" : "blocked"}`}
                 title={r.error || r.path} onClick={ready ? () => onSelect(r.path) : undefined}>
                 <span className="name">⑂ {r.name}</span>
-                <button className="secondary icon gh-remove" title="Remove from AutoSDE (reviews are kept)"
+                <button className="secondary icon gh-remove" title="Remove from Review Crew (reviews are kept)"
                   aria-label={`Remove ${r.name}`} onClick={async (e) => {
                     e.stopPropagation();
-                    if (!window.confirm(`Remove ${r.name} from AutoSDE? Its reviews are kept.`)) return;
+                    if (!window.confirm(`Remove ${r.name} from Review Crew? Its reviews are kept.`)) return;
                     await api.removeRemote(r.remote_id);
                     onChanged();
                   }}>✕</button>
@@ -209,7 +209,7 @@ function Settings({ theme, setTheme, prefs, setPrefs, onRescan, onTour }) {
         Show blocked folders and projects
       </label>
       <p className="small muted">
-        Blocked means macOS has not approved AutoSDE (your terminal) for that folder. To review
+        Blocked means macOS has not approved Review Crew (your terminal) for that folder. To review
         a blocked project, allow access in System Settings → Privacy &amp; Security → Files and
         Folders, then rescan.
       </p>
@@ -780,7 +780,7 @@ export default function App({ onSignOut }) {
         <button className="menu" aria-label="Toggle projects menu"
           onClick={() => (window.matchMedia("(max-width: 760px)").matches
             ? setDrawer(!drawer) : setPrefs({ collapsed: !prefs.collapsed }))}>☰</button>
-        <a className="brand" href={routeHref({ kind: "home" })}><span className="brand-mark">A</span>AutoSDE</a>
+        <a className="brand" href={routeHref({ kind: "home" })}><span className="brand-mark">R</span>Review Crew</a>
         <Crumbs view={view} canGoBack={window.history.length > 1} onBack={back} go={go} />
         <span className="grow" />
         {onSignOut && <>

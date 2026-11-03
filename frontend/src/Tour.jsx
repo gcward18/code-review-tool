@@ -17,7 +17,7 @@ function remember() {
 }
 
 const STEPS = [
-  { title: "Welcome to AutoSDE", text: "A team of AI agents reviews the commits you choose. This quick tour shows where things are. You can skip it at any time." },
+  { title: "Welcome to Review Crew", text: "A team of AI agents reviews the commits you choose. This quick tour shows where things are. You can skip it at any time." },
   { target: "aside", title: "Your projects", text: "Repositories appear here: Recent ones you've reviewed and Available ones found on this machine. Search filters both." },
   { target: ".add-gh-btn", title: "GitHub repositories", text: "Add a GitHub repository by owner/name to review it straight from GitHub, without cloning." },
   { target: "[data-tour=agents]", title: "Agents", text: "Choose which specialists run, their models and prompts, and attach knowledge bases with your team's rules." },

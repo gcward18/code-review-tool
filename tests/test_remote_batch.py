@@ -33,7 +33,7 @@ def history(root):
 
 
 class FakeGitHub:
-    """Answers the GitHub API calls AutoSDE makes, from a local repository."""
+    """Answers the GitHub API calls Review Crew makes, from a local repository."""
 
     def __init__(self, repo, owner="octo", name="calc"):
         self.repo, self.prefix, self.calls = repo, f"repos/{owner}/{name}", []

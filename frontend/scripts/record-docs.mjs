@@ -103,7 +103,7 @@ async function settingsPage(page) {
   }
   await page.getByText("Show agent details").click();
   await pause(page);
-  await page.getByRole("link", { name: "AutoSDE" }).click();
+  await page.getByRole("link", { name: "Review Crew" }).click();
   await pause(page, 2000);  // the Agents column now shows on Home
   await page.getByRole("button", { name: "Toggle projects menu" }).click();
   await pause(page, 1500);

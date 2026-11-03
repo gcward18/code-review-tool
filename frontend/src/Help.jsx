@@ -78,7 +78,7 @@ export default function Help({ onTour }) {
           <h2 className="grow">Help</h2>
           <button className="secondary" onClick={onTour}>Show the tour again</button>
         </div>
-        <p className="muted">Short videos of AutoSDE in use, then answers to common questions.</p>
+        <p className="muted">Short videos of Review Crew in use, then answers to common questions.</p>
       </div>
       <h3 className="kb-h">Watch how it works</h3>
       <div className="video-grid">

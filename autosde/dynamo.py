@@ -1,4 +1,4 @@
-"""DynamoDB store: the same interface as the SQLite `Store`, for AutoSDE on AWS.
+"""DynamoDB store: the same interface as the SQLite `Store`, for Review Crew on AWS.
 
 One table, keyed by PK/SK strings, with two global secondary indexes:
 

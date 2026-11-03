@@ -7,7 +7,7 @@ Initial estimate rates: $2.50 input / $10.00 output per million standard text to
 - Target: `AutoSDELocal-dev`, account `123456789012`, region `us-east-1`, profile `your-profile`.
 - Existing OpenAI and LangSmith secret metadata and CDK bootstrap v32 were verified.
 - A new Secrets Manager container `autosde/github-token` was created as requested. It has no token value yet; private GitHub access requires the user to populate it securely.
-- Deployment is complete (`UPDATE_COMPLETE`) and the snapshot frontend is published at [AutoSDE](https://d111111abcdef8.cloudfront.net/).
+- Deployment is complete (`UPDATE_COMPLETE`) and the snapshot frontend is published at [Review Crew](https://d111111abcdef8.cloudfront.net/).
 - API endpoint: `https://abc123defg.execute-api.us-east-1.amazonaws.com`. Cognito pool: `us-east-1_EXAMPLE`.
 - The first attempt found an invalid CloudFront header policy. Recovery preserved/imported the only resource actually retained (the new Cognito pool), then deployed the corrected stack. No existing data/resources were deleted.
 - Homepage, runtime config and JavaScript return 200; anonymous API requests return 401 through both CloudFront and API Gateway. The final snapshot CDK diff has zero differences.

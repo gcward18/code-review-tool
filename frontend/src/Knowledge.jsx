@@ -20,7 +20,7 @@ function NewBase({ onCreated, onCancel }) {
       onCreated(base.id);
     } catch (err) {
       setError(err.message === "Not found."
-        ? "The server is running an older AutoSDE. Restart `autosde serve` and try again."
+        ? "The server is running an older Review Crew. Restart `autosde serve` and try again."
         : err.message);
     } finally {
       setBusy(false);
@@ -652,7 +652,7 @@ export default function Knowledge({ selected, onSelect: setSelected }) {
     setBases(list);
     if (!list.length) setCreating(true);
   }).catch((e) => setError(e.message === "Not found."
-    ? "The server is running an older AutoSDE without knowledge bases. Restart `autosde serve` and reload this page."
+    ? "The server is running an older Review Crew without knowledge bases. Restart `autosde serve` and reload this page."
     : e.message));
   const selection = useRef(selected);
   selection.current = selected;

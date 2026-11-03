@@ -1,4 +1,4 @@
-# AutoSDE on AWS: migration plan
+# Review Crew on AWS: migration plan
 
 Target: account `123456789012`, region `us-east-1`, profile `your-profile`, stage `dev` (from the Code Review Service `.env`). The local app keeps working; the same code runs in AWS with different storage and configuration backends.
 

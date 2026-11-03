@@ -1,4 +1,4 @@
-"""The AutoSDE application: everything the JSON API does, independent of how requests
+"""The Review Crew application: everything the JSON API does, independent of how requests
 arrive (the local HTTP server in web.py, or API Gateway and Lambda in aws.py).
 
 Storage, the model client, GitHub access and background jobs are passed in, so the same

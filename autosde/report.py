@@ -87,7 +87,7 @@ def sarif(review):
             {
                 "tool": {
                     "driver": {
-                        "name": "AutoSDE",
+                        "name": "Review Crew",
                         "rules": [{"id": f"autosde/{r}", "name": r.title()} for r in rules],
                     }
                 },

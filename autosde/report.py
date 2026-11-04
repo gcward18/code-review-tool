@@ -12,7 +12,8 @@ def when(timestamp):
 
 def plan_text(result, files, selection, estimate, settings):
     """The approval view: who reviews what, what is flagged, and roughly what it costs."""
-    agent_of = {p: agent for agent, item in result.plan.items() for p in item["files"]}
+    from autosde.team import owners_of
+    agent_of = {p: ", ".join(a) for p, a in owners_of(result.plan).items()}
     lines = ["", "Plan:"]
     for f in files:
         if f.skipped:

@@ -164,7 +164,8 @@ class Store:
 
     def save_plan(self, review_id, result, files, *, input_price, output_price, record=None):
         """Store the coordinator call and the per-file plan; await approval."""
-        agent_of = {p: agent for agent, item in result.plan.items() for p in item["files"]}
+        from autosde.team import owners_of
+        agent_of = {p: ", ".join(a) for p, a in owners_of(result.plan).items()}
         incoming, outgoing, cost = self._totals(result, input_price, output_price)
         self.db.execute("BEGIN")
         try:

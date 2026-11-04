@@ -18,7 +18,8 @@ Scored on 2026-11-03 against the capstone rubric adapted for AutoSDE (`docs/CAPS
 ### 1. Multi-Agent Review Orchestration: 75
 
 - **Meets Excellent:** `Team` in `autosde/team.py` runs as LangGraph graphs. A one-node planning graph runs the coordinator; after approval, the review graph fans out to the assigned specialists with `Send` (up to `workers` at once) and joins at one aggregator node, with findings numbered in plan order. Assignments are limited to enabled specialists and changed files; a failed coordinator, or files it leaves out, fall back to extension routing. Each specialist gets numbered head files, the diff, its focus prompt and knowledge-base passages; the aggregator gets every finding. A human approves the files and the estimated cost before source reaches the specialists.
-- **Holds it at Good:** each file gets one specialist (`path not in assigned`), so a TypeScript Angular file can't get two reviewers. The approved "at most" is now enforced while a review runs (see criterion 6), but there is no review deadline beyond the 14-minute worker timeout. Aggregation rounds are capped at three, and each specialist call at its retry limit.
+- **Framework files:** an Angular or React file gets its language specialist and its framework specialist (`frameworks` in `autosde/team.py`), each with its own focus prompt; approval, estimates, budget and storage handle a file with two owners, and the aggregator removes duplicates between them.
+- **Holds it at Good:** the approved "at most" is now enforced while a review runs (see criterion 6), but there is no review deadline beyond the 14-minute worker timeout. Aggregation rounds are capped at three, and each specialist call at its retry limit.
 
 ### 2. Aggregation Gate & Follow-up Loop: 100
 
@@ -65,5 +66,4 @@ Scored as a design choice on its own terms, as the rubric does for one-attempt c
 | Change | Criteria | Gain |
 | --- | --- | --- |
 | Record one paid review per language and add a teardown section | 5, 6, 7 | +2.50 to +7.50 |
-| Finish a review with a partial report before the worker's deadline | 6 (with a paid run) | +2.50 |
-| Let admission give framework TypeScript files a second specialist | 1 | +5.00 |
+| Give each review a deadline that ends in a partial report before the worker's timeout | 1, 6 (with a paid run) | +5.00 to +7.50 |

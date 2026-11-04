@@ -1,0 +1,1 @@
+React: hooks called conditionally or in loops, `useEffect`/`useMemo`/`useCallback` dependency arrays that miss values or cause loops, effects without cleanup (timers, subscriptions, stale fetches), state updated from stale values instead of updater functions, state or props mutated in place, missing or unstable `key`s in lists, and rendering that reads data before it has loaded.

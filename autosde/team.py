@@ -23,7 +23,7 @@ from langgraph.types import Send
 from langsmith import tracing_context
 
 from autosde import agents
-from autosde.agents import SPECIALISTS, load_config, retries, specialists
+from autosde.agents import FRAMEWORKS, SPECIALISTS, load_config, retries, specialists
 from autosde.knowledge import context_block
 from autosde.noise import flag
 
@@ -208,6 +208,29 @@ def prompt(name, **values):
     return text
 
 
+_ANGULAR = re.compile(r"""from\s+['"]@angular/|@(?:Component|Injectable|NgModule|Directive|Pipe)\s*\(""")
+_REACT = re.compile(r"""from\s+['"](?:react|react-dom)(?:/[^'"]*)?['"]|require\(\s*['"]react['"]\s*\)""")
+
+
+def frameworks(path, head):
+    """Framework specialists for a file, from its extension and imports (not exclusive)."""
+    lower, found = path.lower(), []
+    if lower.endswith(".ts") and _ANGULAR.search(head):
+        found.append("angular")
+    if lower.endswith((".jsx", ".tsx")) or (lower.endswith((".js", ".ts")) and _REACT.search(head)):
+        found.append("react")
+    return found
+
+
+def owners_of(plan):
+    """path -> its specialists in plan order, e.g. {"app.ts": ["typescript", "angular"]}."""
+    owners = {}
+    for agent, item in plan.items():
+        for path in item["files"]:
+            owners.setdefault(path, []).append(agent)
+    return owners
+
+
 def route(path, table=None):
     """Pick the enabled specialist whose extensions match; `general` takes the rest."""
     table = specialists(load_config()) if table is None else table
@@ -383,7 +406,8 @@ class TeamResult:
     limitations: list[str] = field(default_factory=list)
 
     def files(self):
-        return [path for item in self.plan.values() for path in item["files"]]
+        """Planned paths, once each, even when two specialists review a file."""
+        return list(dict.fromkeys(path for item in self.plan.values() for path in item["files"]))
 
     def default_selection(self):
         """Proposed approval: every planned file except flagged ones."""
@@ -593,6 +617,16 @@ class Team:
             result.limitations.append(f"Coordinator left {len(missing)} file(s) unassigned; routed by type.")
         for path in missing:
             plan.setdefault(route(path, table), {"files": [], "focus": ""})["files"].append(path)
+        # Framework files get their framework specialist too, and a file the coordinator gave only
+        # to a framework specialist keeps its language specialist.
+        owners = owners_of(plan)
+        for f in files:
+            mine = owners.get(f.path, [])
+            if mine and all(agent in FRAMEWORKS for agent in mine):
+                plan.setdefault(route(f.path, table), {"files": [], "focus": ""})["files"].append(f.path)
+            for agent in frameworks(f.path, f.head):
+                if agent in table and agent not in mine:
+                    plan.setdefault(agent, {"files": [], "focus": ""})["files"].append(f.path)
         result.plan = plan
         return plan
 

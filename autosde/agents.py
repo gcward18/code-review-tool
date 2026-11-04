@@ -16,12 +16,17 @@ SPECIALISTS = {
     "python": [".py"],
     "javascript": [".js", ".mjs", ".cjs", ".jsx"],
     "typescript": [".ts", ".tsx"],
+    # Framework specialists claim no extensions: they are added by imports, beside the language
+    # specialist that owns the file (see FRAMEWORKS and team.frameworks).
+    "angular": [],
+    "react": [],
     "java": [".java"],
     "go": [".go"],
     "csharp": [".cs"],
     "general": [],  # catch-all for every other file; cannot be disabled
 }
 ROLES = ("coordinator", *SPECIALISTS, "aggregator", "chat")
+FRAMEWORKS = ("angular", "react")
 SYSTEM_PROMPTS = {"coordinator": "coordinator.md", "aggregator": "aggregator.md",
                   "specialist": "specialist.md", "chat": "chat.md",
                   "chunk_summary": "chunk_summary.md"}
@@ -119,6 +124,8 @@ def validate(config):
             if ext in seen and seen[ext] != name:
                 raise ConfigError(f"{ext} is claimed by both {seen[ext]} and {name}.")
             seen[ext] = name
+    for name in FRAMEWORKS:
+        clean["agents"][name]["extensions"] = []  # chosen by imports, never by extension
     for fixed in ("general", *CORE):
         clean["agents"][fixed]["enabled"] = True  # the team cannot run without these
     return clean

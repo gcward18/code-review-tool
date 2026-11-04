@@ -13,7 +13,7 @@ from autosde import git as capture_git
 from autosde.db import Store
 from autosde.llm import ScriptedModel
 from autosde.review import ReviewError, context_reader, run_review
-from autosde.team import (AGGREGATOR_INPUT, AGGREGATOR_OUTPUT, BUDGET_REACHED, MAX_CONTEXT_LINES, Budget, MAX_CONTEXT_READS, MAX_ROUNDS, ContextUnavailable, Team,
+from autosde.team import (frameworks, owners_of, AGGREGATOR_INPUT, AGGREGATOR_OUTPUT, BUDGET_REACHED, MAX_CONTEXT_LINES, Budget, MAX_CONTEXT_READS, MAX_ROUNDS, ContextUnavailable, Team,
                           TeamResult, changed_lines, numbered)
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
@@ -266,6 +266,65 @@ class TeamTests(unittest.TestCase):
         model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)], "aggregator": [ask]})
         result = Team(model).run(self.files())
         self.assertEqual([(f.kept, f.rejection) for f in result.findings], [(False, "duplicate")])
+
+    def framework_files(self):
+        diff = "@@ -0,0 +1,2 @@\n+x\n+y\n"
+        return [
+            capture_git.ChangedFile(path="src/app/cart.component.ts", status="M", diff=diff,
+                                    head="import { Component } from '@angular/core';\n@Component({})\n"),
+            capture_git.ChangedFile(path="src/Cart.tsx", status="M", diff=diff,
+                                    head="import { useState } from 'react';\n"),
+            capture_git.ChangedFile(path="src/util.ts", status="M", diff=diff, head="export const x = 1;\n"),
+            capture_git.ChangedFile(path="src/hooks.js", status="M", diff=diff,
+                                    head="const React = require('react');\n"),
+        ]
+
+    def test_framework_files_are_detected_by_imports(self):
+        found = {f.path: frameworks(f.path, f.head) for f in self.framework_files()}
+        self.assertEqual(found, {"src/app/cart.component.ts": ["angular"], "src/Cart.tsx": ["react"],
+                                 "src/util.ts": [], "src/hooks.js": ["react"]})
+        self.assertEqual(frameworks("a.ts", "@Injectable()\nexport class S {}"), ["angular"])
+        self.assertEqual(frameworks("a.py", "from '@angular/core'"), [])
+
+    def test_framework_files_get_their_language_and_framework_specialists(self):
+        plan = dict(PLAN, assignments=[
+            {"agent": "typescript", "files": ["src/app/cart.component.ts", "src/util.ts"], "focus": "types"},
+            {"agent": "react", "files": ["src/Cart.tsx"], "focus": "hooks"},  # framework only
+        ])
+        result = Team(ScriptedModel({"coordinator": [plan]})).plan(self.framework_files())
+        self.assertEqual({p: set(a) for p, a in owners_of(result.plan).items()}, {
+            "src/app/cart.component.ts": {"typescript", "angular"},
+            "src/util.ts": {"typescript"},
+            "src/Cart.tsx": {"react", "typescript"},
+            "src/hooks.js": {"javascript", "react"},
+        })
+        self.assertEqual(len(result.files()), 4)  # each path once for approval
+
+    def test_disabled_framework_specialists_are_not_added(self):
+        config = agents.defaults()
+        config["agents"]["angular"]["enabled"] = False
+        result = Team(ScriptedModel({}), config=config).plan(self.framework_files()[:1])
+        self.assertEqual(owners_of(result.plan), {"src/app/cart.component.ts": ["typescript"]})
+
+    def test_both_specialists_review_a_framework_file_and_both_owners_are_stored(self):
+        model = ScriptedModel({"coordinator": [dict(PLAN, assignments=[])],
+                               "typescript": [findings()], "angular": [findings()],
+                               "aggregator": [verdict()]})
+        files = self.framework_files()[:1]
+        result = Team(model).run(files, {"src/app/cart.component.ts"})
+        self.assertEqual(sorted(c.agent for c in result.calls if c.role == "specialist"),
+                         ["angular", "typescript"])
+        angular = next(c for c in model.calls if c["role"] == "angular")
+        self.assertIn("subscriptions never unsubscribed", angular["system"])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store(Path(tmp.name) / "db.sqlite")
+        changes = capture_git.Changes(repo=Path(tmp.name), name="web", base="a" * 40, head="b" * 40,
+                                      range_spec="a..b", files=files)
+        review_id = store.start_review(store.project(Path(tmp.name), "web"), changes, "scripted")
+        store.save_plan(review_id, result, files, input_price=1, output_price=1)
+        stored = store.review(review_id)["files"]
+        self.assertEqual([f["agent"] for f in stored], ["typescript, angular"])
 
     def test_fallbacks_and_scope(self):
         stray = dict(FINDING, file="other.py")

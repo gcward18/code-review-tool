@@ -3,6 +3,8 @@ import { api } from "./api.js";
 import Workspace, { Panel } from "./Workspace.jsx";
 
 const CORE = ["coordinator", "aggregator", "chat"];
+// Chosen by a file's imports, beside its language specialist, rather than by extension.
+const FRAMEWORKS = { angular: "Angular imports or decorators in .ts files", react: "React imports, or .jsx and .tsx files" };
 const FIXED = [...CORE, "general"];
 const PROMPTS = [
   ["coordinator", "Coordinator", "Plans which specialist reviews which file and flags low-value files."],
@@ -146,7 +148,10 @@ export default function Agents({ defaultModel, selected = "python", onSelect }) 
                   {name === "general" && <span className="badge">catch-all, always on</span>}
                 </label>
               )}
-              {!core && name !== "general" && (
+              {FRAMEWORKS[name] && (
+                <p className="small muted">Reviews files with {FRAMEWORKS[name]}, alongside their language specialist.</p>
+              )}
+              {!core && name !== "general" && !FRAMEWORKS[name] && (
                 <label className="field">
                   <span className="small muted">Extensions</span>
                   <input value={item.extensions.join(", ")} placeholder=".rs, .toml"

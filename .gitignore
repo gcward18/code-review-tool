@@ -27,3 +27,6 @@ __pycache__/
 infrastructure/cdk.out/
 infrastructure/cdk.context.json
 infrastructure/coverage/
+
+# Local agent settings (models, tracing, knowledge bases); AWS keeps them in DynamoDB
+autosde/prompts/agents.json

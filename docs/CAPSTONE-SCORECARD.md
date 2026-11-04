@@ -18,7 +18,7 @@ Scored on 2026-11-03 against the capstone rubric adapted for AutoSDE (`docs/CAPS
 ### 1. Multi-Agent Review Orchestration: 75
 
 - **Meets Excellent:** `Team` in `autosde/team.py` runs as LangGraph graphs. A one-node planning graph runs the coordinator; after approval, the review graph fans out to the assigned specialists with `Send` (up to `workers` at once) and joins at one aggregator node, with findings numbered in plan order. Assignments are limited to enabled specialists and changed files; a failed coordinator, or files it leaves out, fall back to extension routing. Each specialist gets numbered head files, the diff, its focus prompt and knowledge-base passages; the aggregator gets every finding. A human approves the files and the estimated cost before source reaches the specialists.
-- **Holds it at Good:** each file gets one specialist (`path not in assigned`), so a TypeScript Angular file can't get two reviewers. No token or cost budget is enforced while a review runs: the estimate is approved up front, and only batches have a spending cap. There is no review deadline beyond the 14-minute worker timeout. Aggregation rounds are capped at three, and each specialist call at its retry limit.
+- **Holds it at Good:** each file gets one specialist (`path not in assigned`), so a TypeScript Angular file can't get two reviewers. The approved "at most" is now enforced while a review runs (see criterion 6), but there is no review deadline beyond the 14-minute worker timeout. Aggregation rounds are capped at three, and each specialist call at its retry limit.
 
 ### 2. Aggregation Gate & Follow-up Loop: 100
 
@@ -50,8 +50,9 @@ Scored as a design choice on its own terms, as the rubric does for one-attempt c
 ### 6. Reliability, Budgets & Verification: 75
 
 - **Meets Good:** each specialist call is retried up to that specialist's `retries` limit (0–3, default 1), on a transport failure or a reply that breaks its schema. Every attempt is recorded as its own agent run with its tokens, and the approved "at most" estimate covers every attempt in every round, so retries are bounded and paid for up front rather than blind. The aggregator can retry a specialist that still failed, restart one whose work is unusable, and refuse a follow-up's edits. Failed specialists become limitations, a failed coordinator falls back to routing, retrieval failures never block a review, an aggregator failure withholds unvalidated findings, and failed reviews record only the error class. Batches stop at their cost cap.
-- All 143 backend tests pass with `moto` and `AUTOSDE_GITLEAKS` set (without Gitleaks, five Lambda end-to-end tests skip), with 28 frontend and 13 infrastructure tests.
-- **Holds it at Good:** there is no per-call budget reservation and reconciliation, and no partial report when a deadline or budget runs out. Retries and follow-ups are covered by scripted tests only; there is no recorded paid team run.
+- All 152 backend tests pass with `moto` and `AUTOSDE_GITLEAKS` set (without Gitleaks, five Lambda end-to-end tests skip), with 28 frontend and 13 infrastructure tests.
+- **Budget:** the approved "at most" (tokens and cost) is the review's budget. Before each model call the team holds that call's worst case (prompt and full output allowance) and refuses the call when it would not fit; specialists cannot use the aggregator's share, so what was found is still judged. Holds are replaced by reported usage, and a failed call keeps its whole hold, since it may have been billed. Skipped calls are not retried and the review ends with a limit noting it is partial.
+- **Holds it at Good:** reaching the worker's deadline still fails the review instead of producing a partial report. Retries, follow-ups and the budget are covered by scripted tests only; there is no recorded paid team run.
 
 ### 7. Deployment, Code Quality & Documentation: 75
 
@@ -63,5 +64,6 @@ Scored as a design choice on its own terms, as the rubric does for one-attempt c
 | Change | Criteria | Gain |
 | --- | --- | --- |
 | Let the aggregator request the same unchanged files under the review's quota | 4 → 100 | +3.75 |
-| Enforce a per-review token and cost budget during the run, with a partial report when it runs out | 1, 6 | +5.00 to +7.50 |
 | Record one paid review per language and add a teardown section | 5, 6, 7 | +2.50 to +7.50 |
+| Finish a review with a partial report before the worker's deadline | 6 (with a paid run) | +2.50 |
+| Let admission give framework TypeScript files a second specialist | 1 | +5.00 |

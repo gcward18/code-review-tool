@@ -5,6 +5,7 @@ import stat
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from autosde import agents
@@ -12,7 +13,7 @@ from autosde import git as capture_git
 from autosde.db import Store
 from autosde.llm import ScriptedModel
 from autosde.review import ReviewError, context_reader, run_review
-from autosde.team import (MAX_CONTEXT_LINES, MAX_CONTEXT_READS, MAX_ROUNDS, ContextUnavailable, Team,
+from autosde.team import (AGGREGATOR_INPUT, AGGREGATOR_OUTPUT, BUDGET_REACHED, MAX_CONTEXT_LINES, Budget, MAX_CONTEXT_READS, MAX_ROUNDS, ContextUnavailable, Team,
                           TeamResult, changed_lines, numbered)
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
@@ -169,6 +170,61 @@ class TeamTests(unittest.TestCase):
         with self.assertRaises(ContextUnavailable) as secret:
             context_reader(changes, scan, settings=settings(tmp.name))("keys.py", 1, 1)
         self.assertIn("possible secret", str(secret.exception))
+
+    def budgeted(self, script, budget):
+        model = ScriptedModel(script)
+        team = Team(model)
+        result = team.plan(self.files())
+        return model, team.execute(result, self.files(), {"calculator.py"}, budget=budget)
+
+    def test_the_approved_budget_stops_calls_but_keeps_the_aggregator(self):
+        tiny = Budget(input_tokens=AGGREGATOR_INPUT + 300, output_tokens=AGGREGATOR_OUTPUT + 100,
+                      input_price=2.5, output_price=10.0)
+        model, result = self.budgeted({"coordinator": [PLAN], "python": [findings(FINDING)]}, tiny)
+        python = [c for c in result.calls if c.agent == "python"]
+        self.assertEqual([(c.status, c.error) for c in python], [("failed", BUDGET_REACHED)])  # no retry
+        self.assertNotIn("python", [c["role"] for c in model.calls])  # nothing was sent
+        self.assertTrue(any(l.startswith("Review budget reached (at most $") and "partial" in l
+                            for l in result.limitations))
+
+    def test_a_follow_up_round_stops_at_the_budget_and_the_aggregator_still_judges(self):
+        class Full(ScriptedModel):  # every call uses its whole output allowance
+            def complete(self, **kwargs):
+                return replace(super().complete(**kwargs), output_tokens=kwargs["max_output_tokens"])
+
+        ask = verdict(follow_ups=[("python", ["calculator.py"], "Check again?")])
+        model = Full({"coordinator": [PLAN], "python": [findings(FINDING)] * 2,
+                      "aggregator": [ask, verdict()]})
+        team = Team(model)
+        result = team.plan(self.files())
+        # Output room for one specialist call and two aggregator calls, not a second specialist.
+        budget = Budget(input_tokens=10**6, output_tokens=4000 + 2 * AGGREGATOR_OUTPUT,
+                        input_price=2.5, output_price=10.0)
+        result = team.execute(result, self.files(), {"calculator.py"}, budget=budget)
+        self.assertEqual([(c.agent, c.status) for c in result.calls if c.agent != "coordinator"],
+                         [("python", "ok"), ("aggregator", "ok"), ("python", "failed"),
+                          ("aggregator", "ok")])
+        self.assertEqual(result.calls[3].error, BUDGET_REACHED)
+        self.assertEqual([(f.id, f.kept) for f in result.findings], [("python-1", True)])
+        self.assertTrue(any("partial" in l for l in result.limitations))
+
+    def test_a_failed_call_keeps_its_hold_against_the_budget(self):
+        config = agents.defaults()
+        config["agents"]["python"]["retries"] = 1
+        model = ScriptedModel({"coordinator": [PLAN]})  # every python call fails, reporting nothing
+        team = Team(model, config=config)
+        result = team.plan(self.files())
+        # Output room for one specialist hold plus the aggregator's share, not two holds.
+        budget = Budget(input_tokens=10**6, output_tokens=4000 + AGGREGATOR_OUTPUT + 3000,
+                        input_price=2.5, output_price=10.0)
+        result = team.execute(result, self.files(), {"calculator.py"}, budget=budget)
+        self.assertEqual([c.error for c in result.calls if c.agent == "python"],
+                         ["no scripted reply", BUDGET_REACHED])
+
+    def test_no_budget_means_no_limit(self):
+        model, result = self.budgeted({"coordinator": [PLAN], "python": [findings(FINDING)],
+                                       "aggregator": [verdict()]}, None)
+        self.assertFalse(any("budget" in l for l in result.limitations))
 
     def test_fallbacks_and_scope(self):
         stray = dict(FINDING, file="other.py")

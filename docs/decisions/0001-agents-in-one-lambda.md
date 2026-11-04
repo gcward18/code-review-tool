@@ -19,7 +19,7 @@ Agents stay independently configurable without deploying: each one's model, prom
 
 - **Latency and cost:** a Lambda per agent adds an invoke, and possibly a cold start, to every specialist call, retry and follow-up round. In-process branches cost a thread.
 - **Simple state:** retries, follow-up rounds, refused edits and the finding numbering are graph state inside one invocation. Across Lambdas they would need a store, idempotent hand-offs and partial-failure handling.
-- **Same safety:** Gitleaks scanning, the approval step, file scope and retry limits are enforced in the worker either way. A process boundary per agent would not strengthen them.
+- **Same safety:** Gitleaks scanning, the approval step, file scope, retry limits and the review budget are enforced in the worker either way. A process boundary per agent would not strengthen them.
 - **One asset:** the API and worker share one hash-pinned runtime, so there is one artifact to build, scan and deploy.
 
 ## Consequences

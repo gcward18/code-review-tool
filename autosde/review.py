@@ -6,7 +6,7 @@ from autosde import git, tracing
 from autosde.knowledge import Knowledge
 from autosde.scan import ScanUnavailable, scanner
 from autosde.agents import load_config, retries
-from autosde.team import Team, TeamResult, worst_case
+from autosde.team import Budget, Team, TeamResult, worst_case
 
 
 class ReviewError(RuntimeError):
@@ -127,7 +127,9 @@ def approve(pending, *, store, settings, selection=None):
     """Run specialists and the aggregator on the selected paths (default: unflagged)."""
     store.mark_running(pending.review_id)
     try:
-        result = pending.team.execute(pending.result, pending.changes.files, selection)
+        tokens_in, tokens_out, _ = pending.estimate(selection)
+        result = pending.team.execute(pending.result, pending.changes.files, selection,
+                                      budget=budget_of(tokens_in, tokens_out, settings))
         store.finish_review(
             pending.review_id,
             result,
@@ -213,6 +215,11 @@ def default_selection(record):
     return {p for p in files_of(record) if p not in record["flagged"]}
 
 
+def budget_of(tokens_in, tokens_out, settings):
+    """The approved "at most", enforced while the review runs."""
+    return Budget(tokens_in, tokens_out, settings.input_price, settings.output_price)
+
+
 def estimate_record(record, selection):
     """(input tokens, output tokens, agents) for approving `selection`, from the saved plan."""
     config, per_agent = load_config(), []
@@ -284,7 +291,9 @@ def approve_review(review_id, repo, *, store, model, settings, selection=None, s
         result = TeamResult(calls=[planned], plan=record["plan"], flagged=record["flagged"],
                             limitations=list(record["limitations"]), summary=record["summary"])
         chosen = default_selection(record) if selection is None else set(selection) & set(files_of(record))
-        result = team.execute(result, changes.files, chosen)
+        tokens_in, tokens_out, _ = estimate_record(record, chosen)
+        result = team.execute(result, changes.files, chosen,
+                              budget=budget_of(tokens_in, tokens_out, settings))
         store.finish_review(review_id, result, input_price=settings.input_price,
                             output_price=settings.output_price)
         tracing.finish(model, {

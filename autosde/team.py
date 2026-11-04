@@ -39,6 +39,27 @@ ACTIONS = ("question", "restart", "retry")
 # Unchanged-file reads per review, and lines per read. A specialist gets one context round per
 # task: it asks, the ranges are read and scanned, and its next reply is final.
 MAX_CONTEXT_READS, MAX_CONTEXT_LINES = 10, 200
+# Input tokens allowed for one aggregator call (findings, their code and changed lines), and the
+# share of the review budget held back so the aggregator can always judge what was found.
+AGGREGATOR_INPUT, AGGREGATOR_OUTPUT = 6000, 1500
+BUDGET_REACHED = "review budget reached; call skipped"
+
+
+@dataclass(frozen=True)
+class Budget:
+    """The approved "at most" for one review: tokens and USD at per-million-token prices."""
+
+    input_tokens: int
+    output_tokens: int
+    input_price: float
+    output_price: float
+
+    def cost(self, tokens_in, tokens_out):
+        return (tokens_in * self.input_price + tokens_out * self.output_price) / 1_000_000
+
+    @property
+    def max_cost(self):
+        return self.cost(self.input_tokens, self.output_tokens)
 
 # Strict structured-output schemas: every property required, no extras.
 PLAN_SCHEMA = {
@@ -287,8 +308,9 @@ def worst_case(per_agent):
     # about 12 characters a line), so attempts count twice.
     context = MAX_CONTEXT_READS * MAX_CONTEXT_LINES * 12 // 4 if per_agent else 0
     tokens_in = sum(tokens * attempts * 2 for tokens, attempts in per_agent) * MAX_ROUNDS + context
+    tokens_in += (AGGREGATOR_INPUT * MAX_ROUNDS) if per_agent else 0
     tokens_out = (sum(4000 * attempts * 2 for _, attempts in per_agent)
-                  + (1500 if per_agent else 0)) * MAX_ROUNDS
+                  + (AGGREGATOR_OUTPUT if per_agent else 0)) * MAX_ROUNDS
     return tokens_in, tokens_out
 
 
@@ -379,6 +401,8 @@ class Team:
         # None means specialists cannot read unchanged files.
         self.model, self.workers, self.retriever, self.reader = model, workers, retriever, reader
         self._reads, self._reads_lock = 0, threading.Lock()
+        # Set by execute(): calls stop once the approved budget would be exceeded.
+        self.budget, self._spent, self._held, self._skipped = None, [0, 0], [0, 0], 0
         self._fixed = config  # tests pass one; otherwise agents.json is re-read per review
         self.config = config or load_config()
         self.planner, self.reviewer = self._plan_graph(), self._review_graph()
@@ -468,13 +492,46 @@ class Team:
         with tracing_context(enabled=False):
             return graph.invoke(state, {"max_concurrency": self.workers})
 
+    def _reserve(self, call, tokens_in, tokens_out):
+        """Hold this call's worst case against the budget, or refuse it. Specialists may not
+        use the aggregator's share, so the findings can still be judged."""
+        if self.budget is None:
+            return True
+        keep = (0, 0) if call.role == "aggregator" else (AGGREGATOR_INPUT, AGGREGATOR_OUTPUT)
+        with self._reads_lock:
+            would_in = self._spent[0] + self._held[0] + tokens_in + keep[0]
+            would_out = self._spent[1] + self._held[1] + tokens_out + keep[1]
+            if (would_in > self.budget.input_tokens or would_out > self.budget.output_tokens
+                    or self.budget.cost(would_in, would_out) > self.budget.max_cost):
+                self._skipped += 1
+                return False
+            self._held[0] += tokens_in
+            self._held[1] += tokens_out
+            return True
+
+    def _settle(self, held, reply):
+        """Replace the hold with reported usage. A failed call may still have been billed
+        without reporting it, so it keeps its whole hold as spent."""
+        if self.budget is not None:
+            used = (reply.input_tokens, reply.output_tokens) if reply.ok else held
+            with self._reads_lock:
+                self._held[0] -= held[0]
+                self._held[1] -= held[1]
+                self._spent[0] += max(used[0], 0)
+                self._spent[1] += max(used[1], 0)
+
     def _ask(self, call, system, text, schema, limit):
         override = self.config["agents"].get(call.agent, {}).get("model")
         call.model = override or getattr(self.model, "model", None)
+        held = ((len(system) + len(text)) // 3 + 200, limit)  # generous: ~3 characters a token
+        if not self._reserve(call, *held):
+            call.status, call.error = "failed", BUDGET_REACHED
+            return None
         reply = self.model.complete(
             role=call.agent, system=system, prompt=text, schema=schema, max_output_tokens=limit,
             model=override,
         )
+        self._settle(held, reply)
         call.input_tokens, call.output_tokens = reply.input_tokens, reply.output_tokens
         call.seconds = reply.seconds
         if not reply.ok:
@@ -604,6 +661,8 @@ class Team:
             if findings is not None:
                 requests = data.get("requested_context") if isinstance(data, dict) else None
                 return findings, requests if isinstance(requests, list) else []
+            if call.error == BUDGET_REACHED:
+                break  # retrying cannot fit either
             if call.status == "ok":
                 call.status, call.error = "failed", "reply did not match the findings contract"
         return None, []
@@ -748,8 +807,10 @@ class Team:
                 per_agent.append((chars // 4, retries(self.config, agent) + 1))
         return worst_case(per_agent) + (len(per_agent),)
 
-    def execute(self, result, files, selection=None):
-        """Specialists and aggregator on the approved paths only (default: unflagged)."""
+    def execute(self, result, files, selection=None, *, budget=None):
+        """Specialists and aggregator on the approved paths only (default: unflagged), within
+        `budget` (the approved "at most") when one is given."""
+        self.budget, self._spent, self._held, self._skipped = budget, [0, 0], [0, 0], 0
         selection = result.default_selection() if selection is None else set(selection)
         by_path = {f.path: f for f in files if not f.skipped}
         result.approved = {p for p in result.files() if p in selection}
@@ -772,6 +833,11 @@ class Team:
         self._reads = 0
         self._invoke(self.reviewer, {"by_path": by_path, "result": result, "work": work,
                                      "outcomes": [], "round": 1})
+        if self._skipped:
+            result.limitations.append(
+                f"Review budget reached (at most ${budget.max_cost:.4f} approved); "
+                f"{self._skipped} call(s) were skipped, so this review is partial."
+            )
         return result
 
     def run(self, files, selection=None):

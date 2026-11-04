@@ -89,8 +89,8 @@ class PlanTests(Fixture):
         self.assertGreater(everything[0], tokens_in)
         self.assertEqual(team.estimate(result, files, set()), (0, 0, 0))
         # The approved "at most" covers every round, with each specialist's retries and its
-        # context call.
-        self.assertEqual(tokens_out, MAX_ROUNDS * (4000 * (DEFAULT_RETRIES + 1) * 2 + 1500))
+        # context call, and the aggregator's second call after reading code.
+        self.assertEqual(tokens_out, MAX_ROUNDS * (4000 * (DEFAULT_RETRIES + 1) * 2 + 2 * 1500))
 
     def test_only_approved_files_reach_the_specialists(self):
         model = self.model()

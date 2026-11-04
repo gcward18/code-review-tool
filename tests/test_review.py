@@ -226,6 +226,47 @@ class TeamTests(unittest.TestCase):
                                        "aggregator": [verdict()]}, None)
         self.assertFalse(any("budget" in l for l in result.limitations))
 
+    def test_aggregator_reads_requested_code_then_judges(self):
+        reads = []
+
+        def reader(path, start, end):
+            reads.append(path)
+            return f"    {start}| def helper(): ..."
+
+        ask = verdict(reads=[("calculator.py", 1, 2), ("helpers.py", 1, 3), ("other.py", 1, 900)])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],
+                               "aggregator": [ask, verdict(rejected=[("python-1", "inconsistent")])]})
+        result = Team(model, reader=reader).run(self.files())
+        second = [c for c in model.calls if c["role"] == "aggregator"][1]["prompt"]
+        self.assertIn("[calculator.py lines 1-2]\n    1| def calculate_total(items):\n    2|     total = 0", second)
+        self.assertIn("[helpers.py lines 1-3]\n    1| def helper(): ...", second)
+        self.assertIn(f"[other.py lines 1-{MAX_CONTEXT_LINES}]", second)
+        self.assertEqual(reads, ["helpers.py", "other.py"])  # changed files come from what was sent
+        self.assertEqual([c.focus for c in result.calls if c.agent == "aggregator"],
+                         ["", "Judging with requested code"])
+        self.assertIn("Context: aggregator read helpers.py lines 1-3.", result.limitations)
+        self.assertEqual([(f.id, f.kept, f.rejection) for f in result.findings],
+                         [("python-1", False, "inconsistent")])
+
+    def test_aggregator_cannot_read_unapproved_changed_files(self):
+        ask = verdict(reads=[("calculator.py", 1, 2)])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],
+                               "aggregator": [ask, verdict()]})
+        team = Team(model, reader=lambda *a: "x")
+        result = team.plan(self.files())
+        result.plan["python"]["files"].append("notes.py")  # planned but not approved
+        ask["requested_context"].append({"path": "notes.py", "start_line": 1, "end_line": 2,
+                                         "reason": "check"})
+        result = team.execute(result, self.files(), {"calculator.py"})
+        second = [c for c in model.calls if c["role"] == "aggregator"][1]["prompt"]
+        self.assertIn("[notes.py lines 1-2] not available: it is a changed file", second)
+
+    def test_a_failed_second_aggregator_call_keeps_the_first_verdict(self):
+        ask = verdict(rejected=[("python-1", "duplicate")], reads=[("calculator.py", 1, 2)])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)], "aggregator": [ask]})
+        result = Team(model).run(self.files())
+        self.assertEqual([(f.kept, f.rejection) for f in result.findings], [(False, "duplicate")])
+
     def test_fallbacks_and_scope(self):
         stray = dict(FINDING, file="other.py")
         wide = dict(FINDING, start_line=0, end_line=999)

@@ -146,8 +146,22 @@ FINDINGS_SCHEMA = {
 VERDICT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["verdict", "rejected", "refused", "follow_ups", "summary"],
+    "required": ["verdict", "rejected", "refused", "follow_ups", "requested_context", "summary"],
     "properties": {
+        "requested_context": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "start_line", "end_line", "reason"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+            },
+        },
         "verdict": {"type": "string", "enum": ["COMPLETE", "CONTINUE"]},
         "follow_ups": {
             "type": "array",
@@ -229,7 +243,7 @@ def numbered(text):
     return "\n".join(f"{n:5}| {line}" for n, line in enumerate(text.splitlines(), 1))
 
 
-def excerpt(text, start, end, margin=3, limit=40):
+def excerpt(text, start, end, margin=10, limit=40):
     """Numbered head lines around a finding (`margin` either side, at most `limit` lines)."""
     lines = text.splitlines()
     first = max(1, start - margin)
@@ -308,9 +322,10 @@ def worst_case(per_agent):
     # about 12 characters a line), so attempts count twice.
     context = MAX_CONTEXT_READS * MAX_CONTEXT_LINES * 12 // 4 if per_agent else 0
     tokens_in = sum(tokens * attempts * 2 for tokens, attempts in per_agent) * MAX_ROUNDS + context
-    tokens_in += (AGGREGATOR_INPUT * MAX_ROUNDS) if per_agent else 0
+    # The aggregator may also take a second call per round, after reading code it asked for.
+    tokens_in += (2 * AGGREGATOR_INPUT * MAX_ROUNDS) if per_agent else 0
     tokens_out = (sum(4000 * attempts * 2 for _, attempts in per_agent)
-                  + (AGGREGATOR_OUTPUT if per_agent else 0)) * MAX_ROUNDS
+                  + (2 * AGGREGATOR_OUTPUT if per_agent else 0)) * MAX_ROUNDS
     return tokens_in, tokens_out
 
 
@@ -497,7 +512,7 @@ class Team:
         use the aggregator's share, so the findings can still be judged."""
         if self.budget is None:
             return True
-        keep = (0, 0) if call.role == "aggregator" else (AGGREGATOR_INPUT, AGGREGATOR_OUTPUT)
+        keep = (0, 0) if call.role == "aggregator" else (2 * AGGREGATOR_INPUT, 2 * AGGREGATOR_OUTPUT)
         with self._reads_lock:
             would_in = self._spent[0] + self._held[0] + tokens_in + keep[0]
             would_out = self._spent[1] + self._held[1] + tokens_out + keep[1]
@@ -667,9 +682,10 @@ class Team:
                 call.status, call.error = "failed", "reply did not match the findings contract"
         return None, []
 
-    def _context(self, agent, requests, by_path, result):
-        """Read requested unchanged ranges under the review's quota; returns the prompt text."""
-        if self.reader is None:
+    def _context(self, agent, requests, by_path, result, *, changed=False):
+        """Read requested ranges under the review's quota; returns the prompt text. With
+        `changed`, approved changed files are served from what was already sent (no quota)."""
+        if self.reader is None and not changed:
             return ""
         parts = []
         for item in requests:
@@ -680,8 +696,14 @@ class Team:
             start, end = max(1, start), max(1, end)
             end = min(max(start, end), start + MAX_CONTEXT_LINES - 1)
             label = f"[{path} lines {start}-{end}]"
+            if changed and path in by_path and path in result.approved:
+                parts.append(f"{label}\n{excerpt(by_path[path].head, start, end, margin=0, limit=MAX_CONTEXT_LINES)}")
+                continue
             if path in by_path or path in result.files() or path in result.flagged:
                 parts.append(f"{label} not available: it is a changed file, sent only if approved")
+                continue
+            if self.reader is None:
+                parts.append(f"{label} not available: unchanged files cannot be read here")
                 continue
             with self._reads_lock:
                 if self._reads >= MAX_CONTEXT_READS:
@@ -756,7 +778,21 @@ class Team:
                                         "new_ids": edit["after"]} for agent, edit in edits.items()}
         if failed:
             payload["failed_specialists"] = failed
-        data = self._ask(call, prompt("aggregator.md"), json.dumps(payload), VERDICT_SCHEMA, 1500)
+        system, text = prompt("aggregator.md"), json.dumps(payload)
+        data = self._ask(call, system, text, VERDICT_SCHEMA, 1500)
+        requests = data.get("requested_context") if isinstance(data, dict) else None
+        if isinstance(requests, list) and requests:
+            # One read per round: the aggregator sees the code it asked for, then judges.
+            context = self._context("aggregator", requests, by_path, result, changed=True)
+            if context:
+                again = Call(role="aggregator", agent="aggregator", files=call.files,
+                             focus="Judging with requested code")
+                result.calls.append(again)
+                final = self._ask(again, system, text + "\n\n=== Requested code ===\n" + context
+                                  + "\nJudge now with this code; do not request more.",
+                                  VERDICT_SCHEMA, 1500)
+                if final is not None:
+                    data, call = final, again
         verdict = None if data is None else parse_verdict(
             data, candidates + replaced, {a: {"files": fs} for a, fs in reviewers.items()},
             edited=edits, failed=failed,

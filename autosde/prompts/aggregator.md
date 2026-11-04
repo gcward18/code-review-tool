@@ -16,6 +16,8 @@ Reject, with a short reason naming the rule:
 
 Do not reject a finding only because it is low severity. When unsure whether a defect is real, keep it.
 
+Reading code: `code` shows ten lines either side of each finding. When a finding's claim depends on code you cannot see there (a guard or check above it, a caller, a type, a helper it calls, or a test), list those ranges in `requested_context` (a file's path, at most 200 lines, and why) instead of guessing. You can read any changed file in `specialists` and unchanged files of the repository; you get the code once per round, then judge with it. Reject a finding the code contradicts as "inconsistent", even when it is also outside the change. Leave `requested_context` empty when you can judge from what you have.
+
 Follow-up edits: from the second round, `edits` shows, per specialist, the findings its follow-up replaced (`replaced`) and the ids of its new ones (`new_ids`, among `findings`). If the new findings are worse than the ones they replaced (they drop a real defect, turn a concrete finding vague, or contradict the code), add the specialist to `refused` with a short reason: its replaced findings are restored and its new ones are rejected. You can still reject individual restored or new findings by id.
 
 Failed specialists: `failed_specialists` lists specialists whose every attempt failed, with their files. Their files have not been reviewed.

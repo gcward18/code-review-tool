@@ -8,6 +8,7 @@ import Tour, { tourDone } from "./Tour.jsx";
 import Knowledge from "./Knowledge.jsx";
 import BatchPanel from "./Batch.jsx";
 import ChangedFiles from "./Diff.jsx";
+import { coverage, toggleAll, toggleOne } from "./selection.js";
 import Markdown, { MarkdownInline } from "./Markdown.jsx";
 import Workspace, { Panel } from "./Workspace.jsx";
 
@@ -365,14 +366,17 @@ function Plan({ review, onDecided, showAgents }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const toggle = async (path) => {
-    const next = new Set(chosen);
-    next.has(path) ? next.delete(path) : next.add(path);
+  const latest = useRef(0);
+  const paths = reviewable.map((f) => f.path);
+  const all = coverage(paths, chosen);
+  const choose = async (next) => {
     setChosen(next);
+    const request = ++latest.current; // ignore estimates for an older selection
     try {
-      setEstimate(await api.estimate(review.id, [...next]));
+      const value = await api.estimate(review.id, [...next]);
+      if (request === latest.current) setEstimate(value);
     } catch (e) {
-      setError(e.message);
+      if (request === latest.current) setError(e.message);
     }
   };
   const decide = async (approved) => {
@@ -392,7 +396,12 @@ function Plan({ review, onDecided, showAgents }) {
       <table>
         <thead>
           <tr>
-            <th></th>
+            <th>
+              <input type="checkbox" aria-label="Select all files" title="Select all or none"
+                checked={all === "all"} disabled={paths.length === 0}
+                ref={(box) => { if (box) box.indeterminate = all === "some"; }}
+                onChange={() => choose(toggleAll(paths, chosen))} />
+            </th>
             <th>File</th>
             {showAgents && <th>Specialist</th>}
             <th>Note</th>
@@ -402,7 +411,8 @@ function Plan({ review, onDecided, showAgents }) {
           {reviewable.map((f) => (
             <tr key={f.path} className={f.flag ? "flagged" : ""}>
               <td>
-                <input type="checkbox" checked={chosen.has(f.path)} onChange={() => toggle(f.path)} />
+                <input type="checkbox" aria-label={`Select ${f.path}`} checked={chosen.has(f.path)}
+                  onChange={() => choose(toggleOne(f.path, chosen))} />
               </td>
               <td><code>{f.path}</code></td>
               {showAgents && <td>{f.agent}</td>}

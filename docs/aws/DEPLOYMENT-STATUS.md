@@ -51,3 +51,9 @@ Post-update checks: the final CDK diff reports zero differences (`.build/direct-
 - Deployed `15fa977` (Lambda code only), built from a clean snapshot so uncommitted local edits were not packaged. `cdk diff` showed only new API and worker code and versions and their `live` aliases; no IAM, data, Cognito or CloudFront changes. Previous versions are retained.
 - Adds unchanged-file context reads for specialists (scanned, 10 reads of up to 200 lines per review) and enforcement of the approved "at most" budget during each review. Model, price and secret parameters were kept.
 - Live checks: site and runtime config 200, anonymous API 401, worker `live` alias at version 7. No paid inference was run.
+
+## 2026-11-03: aggregator code reads
+
+- Deployed `3466c4e` (Lambda code only) from a clean snapshot. `cdk diff` showed only new API and worker code and versions and their `live` aliases; previous versions are retained.
+- The aggregator now sees ten lines either side of each finding and can request more code once per round before judging. LangSmith tracing was turned on in the deployed agent settings (project `autosde`, every agent traced).
+- Live checks: site and runtime config 200, anonymous API 401. No paid inference was run.

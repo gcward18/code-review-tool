@@ -2,7 +2,7 @@
 
 A code reviewer for your git repositories, running locally or on AWS. A small team of AI agents reviews a commit range, you approve which files the specialists receive, and every review is saved for browsing, querying and chat.
 
-- **Agent team:** a coordinator assigns changed files to language specialists (Python, JavaScript, TypeScript, Java, Go, C#, and a general catch-all). They review in parallel, and an aggregator keeps or rejects their findings. Fixes come back as diffs with line numbers.
+- **Agent team:** a coordinator assigns changed files to language specialists (Python, JavaScript, TypeScript, Java, Go, C#, and a general catch-all). They review in parallel, and an aggregator checks their findings against the code, rejects weak ones, and can send a specialist one follow-up question before deciding. Fixes come back as diffs with line numbers.
 - **Approval first:** rules flag files that rarely hold defects (lockfiles, build output, IDE settings, minified bundles). The coordinator uses file metadata to plan assignments; that model call uses tokens. You then select files and approve the estimated specialist review cost before source code reaches the specialists.
 - **Storage and privacy:** local mode uses SQLite; AWS uses DynamoDB and private S3 storage. Reviewed source files and diffs are read from git or GitHub when needed, rather than saved as review payloads. Gitleaks scans review files before model use; optional LangSmith traces can contain scanned prompts, code and replies. Uploaded knowledge documents have their own storage flow below.
 - **Small:** Python 3.12+ with a standard-library core and optional PDF/AWS dependencies. The React web UI is prebuilt, so no Node is needed to run it locally.
@@ -11,7 +11,7 @@ A code reviewer for your git repositories, running locally or on AWS. A small te
 
 ### Agent team
 
-[`Team`](autosde/team.py) orchestrates the coordinator, parallel specialists and aggregator as [LangGraph](https://langchain-ai.github.io/langgraph/) graphs, through the shared model adapter. Planning is a one-node coordinator graph; after approval, the review graph fans out to the assigned specialists with `Send` and then runs the aggregator. The two graphs stay separate because approval can happen in another process (a separate Lambda in AWS), so no checkpointer is needed: the plan is saved with the review. Models, prompts, file extensions and attached knowledge bases are configurable per agent. The specialist pool runs up to four calls concurrently by default; additional specialists can be configured. The aggregator receives candidate findings and changed-line ranges, and is skipped when there are no findings.
+[`Team`](autosde/team.py) orchestrates the coordinator, parallel specialists and aggregator as [LangGraph](https://langchain-ai.github.io/langgraph/) graphs, through the shared model adapter. Planning is a one-node coordinator graph; after approval, the review graph fans out to the assigned specialists with `Send`, collects their findings and runs the aggregator. When the aggregator returns `CONTINUE`, the graph loops back to the specialists it names, with its question, on files they already reviewed; their answer replaces their earlier findings on those files, and the aggregator judges again. Reviews stop after two aggregation rounds (`MAX_ROUNDS`), and the approved cost estimate covers that second round. The two graphs stay separate because approval can happen in another process (a separate Lambda in AWS), so no checkpointer is needed: the plan is saved with the review. Models, prompts, file extensions and attached knowledge bases are configurable per agent. The specialist pool runs up to four calls concurrently by default; additional specialists can be configured. The aggregator receives candidate findings with the numbered code around each one, the changed-line ranges and who reviewed what, and is skipped when there are no findings. If its reply is missing or breaks its contract, every unvalidated finding is withheld (listed as rejected, with that reason) rather than kept.
 
 ```mermaid
 flowchart TD
@@ -29,7 +29,8 @@ flowchart TD
     end
     Reload --> Python & Web & Other
     Knowledge["Attached knowledge bases<br/>Vector + BM25 retrieval, fused by RRF"] -. Relevant passages .-> Python & Web & Other
-    Python & Web & Other --> Aggregator["Aggregator<br/>Keep or reject findings with reasons"]
+    Python & Web & Other --> Aggregator["Aggregator<br/>Check findings against the code,<br/>keep or reject with reasons"]
+    Aggregator -. "CONTINUE: follow-up question<br/>(one more round at most)" .-> Python & Web & Other
     Aggregator --> History[("Review history<br/>Findings, runs, tokens and cost")]
     History --> Results["Review UI, CLI and SARIF"]
     History --> Chat["Chat agent<br/>Home or project questions"]
@@ -133,8 +134,14 @@ sequenceDiagram
         Model-->>Team: Structured candidate findings
     end
     opt Candidate findings exist
-        Team->>Model: Aggregator call with findings and changed-line ranges
-        Model-->>Team: Rejections, reasons and summary
+        Team->>Model: Aggregator call with findings, their numbered code and changed-line ranges
+        Model-->>Team: Verdict, rejections, reasons and summary
+        opt CONTINUE with follow-up questions (one round at most)
+            Team->>Model: Named specialists with the question, on files they reviewed
+            Model-->>Team: Their complete findings for those files
+            Team->>Model: Aggregator judges again
+            Model-->>Team: Final verdict, rejections and summary
+        end
     end
     Team-->>Worker: Findings, agent runs and usage
     Worker->>Store: Save completed review and cost

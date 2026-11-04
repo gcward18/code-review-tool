@@ -1,13 +1,14 @@
 """Coordinator -> parallel specialists -> aggregator, over one committed range.
 
 Both steps are LangGraph graphs: planning is a one-node graph (the coordinator), and the
-approved review fans out to the specialists with `Send` before one aggregator node. Planning
-and review stay separate graphs because approval happens between them, possibly in another
-process; no checkpointer is needed since the plan is saved with the review.
+approved review fans out to the specialists with `Send`, collects their findings and runs the
+aggregator. The aggregator sees the code at each finding; when it returns CONTINUE, the graph
+loops back to the named specialists with its questions, for at most MAX_ROUNDS aggregation
+rounds. Planning and review stay separate graphs because approval happens between them, possibly
+in another process; no checkpointer is needed since the plan is saved with the review.
 """
 
 import json
-import operator
 import re
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,9 @@ PROMPTS = Path(__file__).parent / "prompts"
 AGENTS = tuple(SPECIALISTS)
 SEVERITIES = ("critical", "high", "medium", "low")
 CATEGORIES = ("correctness", "security", "reliability", "performance", "maintainability")
+# Aggregation rounds per review: the first, plus one follow-up round when the aggregator asks.
+# Estimates multiply by this, so the approved "at most" cost covers the follow-ups.
+MAX_ROUNDS = 2
 
 # Strict structured-output schemas: every property required, no extras.
 PLAN_SCHEMA = {
@@ -99,8 +103,22 @@ FINDINGS_SCHEMA = {
 VERDICT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["rejected", "summary"],
+    "required": ["verdict", "rejected", "follow_ups", "summary"],
     "properties": {
+        "verdict": {"type": "string", "enum": ["COMPLETE", "CONTINUE"]},
+        "follow_ups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["agent", "files", "question"],
+                "properties": {
+                    "agent": {"type": "string"},
+                    "files": {"type": "array", "items": {"type": "string"}},
+                    "question": {"type": "string"},
+                },
+            },
+        },
         "rejected": {
             "type": "array",
             "items": {
@@ -156,6 +174,49 @@ def changed_lines(diff):
 
 def numbered(text):
     return "\n".join(f"{n:5}| {line}" for n, line in enumerate(text.splitlines(), 1))
+
+
+def excerpt(text, start, end, margin=3, limit=40):
+    """Numbered head lines around a finding (`margin` either side, at most `limit` lines)."""
+    lines = text.splitlines()
+    first = max(1, start - margin)
+    last = min(len(lines), end + margin, first + limit - 1)
+    return "\n".join(f"{n:5}| {lines[n - 1]}" for n in range(first, last + 1))
+
+
+def parse_verdict(data, candidates, plan):
+    """The aggregator's verdict as (rejected {id: reason}, follow-ups, summary), or None.
+
+    Follow-ups name a planned specialist and files it reviewed; others are dropped. CONTINUE
+    with no usable follow-up, or an unknown verdict, makes the whole verdict invalid."""
+    try:
+        ids = {f.id for f in candidates}
+        rejected = {item["id"]: str(item.get("reason", "")) for item in data["rejected"]
+                    if item["id"] in ids}
+        follow_ups = []
+        for item in data["follow_ups"] if data["verdict"] == "CONTINUE" else []:
+            owned = plan.get(item["agent"], {}).get("files", [])
+            files = [path for path in item["files"] if path in owned]
+            if files and str(item["question"]).strip():
+                follow_ups.append((item["agent"], files, str(item["question"]).strip()))
+        if data["verdict"] not in ("COMPLETE", "CONTINUE") or (
+            data["verdict"] == "CONTINUE" and not follow_ups
+        ):
+            return None
+        return rejected, follow_ups, str(data["summary"])
+    except (KeyError, TypeError, AttributeError):
+        return None
+
+
+def worst_case(prompt_tokens, specialists):
+    """(input, output) token bound for a review: every round can re-run each specialist."""
+    output = specialists * 4000 + (1500 if specialists else 0)
+    return prompt_tokens * MAX_ROUNDS, output * MAX_ROUNDS
+
+
+def _outcomes(old, new):
+    """Fan-in for specialist branches; None clears it for the next round."""
+    return [] if new is None else [*(old or []), *new]
 
 
 @dataclass
@@ -222,8 +283,9 @@ class PlanState(TypedDict):
 class ReviewState(TypedDict):
     by_path: dict
     result: Any
-    work: list  # [(agent, assignment)] on approved paths
-    outcomes: Annotated[list, operator.add]  # [(index, call, findings)] from each specialist
+    work: list  # [(agent, assignment)] for this round, on approved paths
+    outcomes: Annotated[list, _outcomes]  # [(index, call, findings)] from this round's specialists
+    round: int
 
 
 class Team:
@@ -247,6 +309,8 @@ class Team:
 
     def _review_graph(self):
         def fan_out(state):
+            if not state["work"]:
+                return END
             return [Send("specialist", {**state, "work": [(n, agent, item)]})
                     for n, (agent, item) in enumerate(state["work"])]
 
@@ -254,24 +318,48 @@ class Team:
             [(n, agent, item)] = state["work"]
             return {"outcomes": [(n, *self._review(agent, item, state["by_path"], state["result"]))]}
 
-        def aggregator(state):
-            result = state["result"]
+        def collect(state):
+            result, follow_up = state["result"], state["round"] > 1
             for _, call, findings in sorted(state["outcomes"], key=lambda outcome: outcome[0]):
                 result.calls.append(call)
                 if call.status != "ok":
                     result.limitations.append(f"{call.agent} specialist failed: {call.error}.")
-                for n, finding in enumerate(findings, 1):
+                    continue
+                if follow_up:
+                    # The follow-up answer is the specialist's complete set for those files.
+                    for earlier in result.kept:
+                        if earlier.agent == call.agent and earlier.file in call.files:
+                            earlier.kept, earlier.rejection = False, "replaced after follow-up"
+                numbered_ids = sum(1 for f in result.findings if f.agent == call.agent)
+                for n, finding in enumerate(findings, numbered_ids + 1):
                     finding.id = f"{call.agent}-{n}"
                     result.findings.append(finding)
-            self._aggregate(result, state["by_path"])
-            return {}
+            return {"outcomes": None}
+
+        def aggregator(state):
+            follow_ups = self._aggregate(state["result"], state["by_path"], state["round"])
+            if not follow_ups:
+                return {"work": []}
+            if state["round"] >= MAX_ROUNDS:
+                state["result"].limitations.append(
+                    f"Review stopped after {MAX_ROUNDS} aggregation rounds; follow-ups were not run."
+                )
+                return {"work": []}
+            work = [
+                (agent, {"files": files, "focus": state["result"].plan[agent]["focus"],
+                         "question": question})
+                for agent, files, question in follow_ups
+            ]
+            return {"work": work, "round": state["round"] + 1}
 
         graph = StateGraph(ReviewState)
         graph.add_node("specialist", specialist)
+        graph.add_node("collect", collect)
         graph.add_node("aggregator", aggregator)
-        graph.add_conditional_edges(START, fan_out, ["specialist"])
-        graph.add_edge("specialist", "aggregator")
-        graph.add_edge("aggregator", END)
+        graph.add_conditional_edges(START, fan_out, ["specialist", END])
+        graph.add_edge("specialist", "collect")
+        graph.add_edge("collect", "aggregator")
+        graph.add_conditional_edges("aggregator", fan_out, ["specialist", END])
         return graph.compile()
 
     def _invoke(self, graph, state):
@@ -355,8 +443,9 @@ class Team:
 
     def _review(self, agent, assignment, by_path, result):
         files = [by_path[p] for p in assignment["files"]]
+        question = assignment.get("question")
         call = Call(role="specialist", agent=agent, files=[f.path for f in files],
-                    focus=assignment["focus"])
+                    focus=f"Follow-up: {question}" if question else assignment["focus"])
         focus = " ".join(
             part for part in (assignment["focus"], agents.read_text(f"focus/{agent}.md").strip()) if part
         )
@@ -367,6 +456,18 @@ class Team:
         reference = self._reference(agent, files)
         if reference:
             body = reference + "\n\n" + body
+        if question:
+            earlier = [
+                {k: getattr(f, k) for k in ("id", "file", "start_line", "end_line", "title")}
+                for f in result.kept if f.agent == agent and f.file in call.files
+            ]
+            body += (
+                "\n\n=== Follow-up from the aggregator ===\n" + question
+                + "\nYour current findings on these files: " + json.dumps(earlier)
+                + "\nAnswer by returning your complete findings for these files: keep, correct"
+                " or drop each one, and add any the question uncovers. Findings you leave out"
+                " are withdrawn."
+            )
         data = self._ask(call, prompt("specialist.md", agent=agent, focus=focus or "general correctness"),
                          body, FINDINGS_SCHEMA, 4000)
         findings = []
@@ -385,31 +486,53 @@ class Team:
             ))
         return call, findings
 
-    def _aggregate(self, result, by_path=None):
-        if not result.findings:
-            result.summary = "No findings were reported."
-            return
-        call = Call(role="aggregator", agent="aggregator", files=sorted({f.file for f in result.findings}))
+    def _aggregate(self, result, by_path=None, round_number=1):
+        """Judge the kept findings against their code; returns follow-ups to run, if any."""
+        by_path = by_path or {}
+        candidates = result.kept
+        if not candidates:
+            result.summary = (
+                "No findings were reported." if round_number == 1
+                else result.summary or "No findings remain after the follow-up."
+            )
+            return []
+        call = Call(role="aggregator", agent="aggregator", files=sorted({f.file for f in candidates}))
         result.calls.append(call)
         listing = [
-            {k: getattr(f, k) for k in ("id", "agent", "file", "start_line", "end_line",
-                                        "severity", "title", "description", "recommendation")}
-            for f in result.findings
+            {**{k: getattr(f, k) for k in ("id", "agent", "file", "start_line", "end_line",
+                                           "severity", "title", "description", "recommendation")},
+             # The numbered head code, so the verdict rests on the code, not the description.
+             **({"code": excerpt(by_path[f.file].head, f.start_line, f.end_line)}
+                if f.file in by_path else {})}
+            for f in candidates
         ]
-        changed = {path: changed_lines(f.diff) for path, f in (by_path or {}).items()
-                   if path in call.files}
+        changed = {path: changed_lines(f.diff) for path, f in by_path.items() if path in call.files}
+        reviewers = {agent: item["files"] for agent, item in result.plan.items()
+                     if any(p in result.approved for p in item["files"])}
         data = self._ask(call, prompt("aggregator.md"),
-                         json.dumps({"changed_lines": changed, "findings": listing}),
+                         json.dumps({"round": round_number, "max_rounds": MAX_ROUNDS,
+                                     "specialists": reviewers, "changed_lines": changed,
+                                     "findings": listing}),
                          VERDICT_SCHEMA, 1500)
-        if data is None:
-            result.limitations.append("Aggregator unavailable; all findings were kept.")
-            return
-        by_id = {f.id: f for f in result.findings}
-        for item in data.get("rejected", []):
-            if item.get("id") in by_id:
-                by_id[item["id"]].kept = False
-                by_id[item["id"]].rejection = item.get("reason", "")
-        result.summary = data.get("summary", "")
+        verdict = None if data is None else parse_verdict(
+            data, candidates,
+            {a: {"files": [p for p in fs if p in result.approved]} for a, fs in reviewers.items()},
+        )
+        if verdict is None:
+            # Unvalidated findings never reach the developer as kept.
+            for finding in candidates:
+                finding.kept, finding.rejection = False, "aggregator verdict unavailable"
+            if call.status == "ok":
+                call.status, call.error = "failed", "verdict did not match the contract"
+            result.limitations.append(
+                f"Aggregator unavailable; {len(candidates)} unvalidated finding(s) withheld."
+            )
+            return []
+        rejected, follow_ups, result.summary = verdict
+        for finding in candidates:
+            if finding.id in rejected:
+                finding.kept, finding.rejection = False, rejected[finding.id]
+        return follow_ups
 
     def plan(self, files):
         """Coordinator step (paths only, cheap). Returns a result awaiting approval."""
@@ -434,7 +557,7 @@ class Team:
                 agents += 1
                 chars += len(prompt("specialist.md", agent=agent, focus=item["focus"]))
                 chars += sum(len(numbered(f.head)) + len(f.diff) + 60 for f in chosen)
-        return chars // 4, agents * 4000 + (1500 if agents else 0), agents
+        return worst_case(chars // 4, agents) + (agents,)
 
     def execute(self, result, files, selection=None):
         """Specialists and aggregator on the approved paths only (default: unflagged)."""
@@ -458,7 +581,7 @@ class Team:
             result.summary = result.summary or "No files were approved for review."
             return result
         self._invoke(self.reviewer, {"by_path": by_path, "result": result, "work": work,
-                                     "outcomes": []})
+                                     "outcomes": [], "round": 1})
         return result
 
     def run(self, files, selection=None):

@@ -71,7 +71,9 @@ class TeamTests(unittest.TestCase):
         self.assertNotIn("total = item", coordinator["prompt"])  # paths only
         self.assertIn('    4|         total = item["price"]', specialist["prompt"])
         self.assertIn("loop totals", specialist["system"])
-        self.assertNotIn("total = 0", aggregator["prompt"])  # findings only, not code
+        # The aggregator judges against the numbered code around each finding.
+        listing = json.loads(aggregator["prompt"])["findings"][0]
+        self.assertIn('    4|         total = item["price"]', listing["code"])
         self.assertEqual(result.summary, "One real defect.")
 
     def test_fallbacks_and_scope(self):
@@ -80,9 +82,9 @@ class TeamTests(unittest.TestCase):
         model = ScriptedModel({"python": [findings(stray, wide)]})  # no coordinator, no aggregator
         result = Team(model).run(self.files())
         self.assertIn("Coordinator unavailable; files were routed by type.", result.limitations)
-        self.assertIn("Aggregator unavailable; all findings were kept.", result.limitations)
-        self.assertEqual([(f.file, f.start_line, f.end_line) for f in result.findings],
-                         [("calculator.py", 1, 5)])
+        self.assertIn("Aggregator unavailable; 1 unvalidated finding(s) withheld.", result.limitations)
+        self.assertEqual([(f.file, f.start_line, f.end_line, f.kept, f.rejection) for f in result.findings],
+                         [("calculator.py", 1, 5, False, "aggregator verdict unavailable")])
 
     def test_aggregator_rejections_are_recorded(self):
         model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING, FINDING)],
@@ -90,6 +92,57 @@ class TeamTests(unittest.TestCase):
         result = Team(model).run(self.files())
         self.assertEqual([(f.id, f.kept, f.rejection) for f in result.findings],
                          [("python-1", True, None), ("python-2", False, "duplicate")])
+
+    def test_continue_reruns_the_named_specialist_and_judges_again(self):
+        second = dict(FINDING, title="Empty items return 0 only by accident", start_line=2, end_line=2)
+        ask = verdict(follow_ups=[("python", ["calculator.py"], "Does the loop handle empty items?")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING), findings(FINDING, second)],
+                               "aggregator": [ask, verdict(rejected=[("python-3", "speculative")])]})
+        result = Team(model).run(self.files())
+        self.assertEqual([c.agent for c in result.calls],
+                         ["coordinator", "python", "aggregator", "python", "aggregator"])
+        follow_up = [c for c in model.calls if c["role"] == "python"][1]
+        self.assertIn("Does the loop handle empty items?", follow_up["prompt"])
+        self.assertIn('"id": "python-1"', follow_up["prompt"])  # its current findings
+        self.assertEqual(result.calls[3].focus, "Follow-up: Does the loop handle empty items?")
+        self.assertEqual([(f.id, f.kept, f.rejection) for f in result.findings],
+                         [("python-1", False, "replaced after follow-up"), ("python-2", True, None),
+                          ("python-3", False, "speculative")])
+        judged = json.loads([c for c in model.calls if c["role"] == "aggregator"][1]["prompt"])
+        self.assertEqual(judged["round"], 2)
+        self.assertEqual([f["id"] for f in judged["findings"]], ["python-2", "python-3"])
+
+    def test_follow_ups_stop_at_the_round_cap(self):
+        ask = verdict(follow_ups=[("python", ["calculator.py"], "Check again?")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING), findings(FINDING)],
+                               "aggregator": [ask, ask]})
+        result = Team(model).run(self.files())
+        self.assertEqual([c.agent for c in result.calls],
+                         ["coordinator", "python", "aggregator", "python", "aggregator"])
+        self.assertIn("Review stopped after 2 aggregation rounds; follow-ups were not run.",
+                      result.limitations)
+        self.assertEqual([f.kept for f in result.findings], [False, True])
+
+    def test_invalid_verdicts_withhold_findings(self):
+        outside = verdict(follow_ups=[("java", ["calculator.py"], "Is this Java?")])  # not on the team
+        for bad in (outside, {"verdict": "MAYBE", "rejected": [], "follow_ups": [], "summary": "?"},
+                    {"rejected": [], "summary": "old shape"}):
+            model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],
+                                   "aggregator": [bad]})
+            result = Team(model).run(self.files())
+            self.assertEqual([(f.kept, f.rejection) for f in result.findings],
+                             [(False, "aggregator verdict unavailable")])
+            self.assertEqual(result.calls[-1].status, "failed")
+            self.assertIn("Aggregator unavailable; 1 unvalidated finding(s) withheld.",
+                          result.limitations)
+
+    def test_failed_follow_up_keeps_the_earlier_findings(self):
+        ask = verdict(follow_ups=[("python", ["calculator.py"], "Check again?")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],
+                               "aggregator": [ask, verdict()]})
+        result = Team(model).run(self.files())  # the second python reply is missing
+        self.assertIn("python specialist failed", " ".join(result.limitations))
+        self.assertEqual([(f.id, f.kept) for f in result.findings], [("python-1", True)])
 
     def test_review_is_a_langgraph_fan_out_that_keeps_plan_order(self):
         both = threading.Barrier(2, timeout=5)  # passes only if both specialists run at once
@@ -104,7 +157,7 @@ class TeamTests(unittest.TestCase):
                             "aggregator": [verdict()]})
         team = Team(model)
         self.assertEqual(set(team.reviewer.get_graph().nodes),
-                         {"__start__", "specialist", "aggregator", "__end__"})
+                         {"__start__", "specialist", "collect", "aggregator", "__end__"})
         result = TeamResult()
         result.plan = {"python": {"files": ["calculator.py"], "focus": ""},
                        "javascript": {"files": ["calculator.py"], "focus": ""}}

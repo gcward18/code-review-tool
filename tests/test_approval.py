@@ -10,7 +10,7 @@ from autosde.db import Store
 from autosde.llm import ScriptedModel
 from autosde.noise import flag
 from autosde.review import approve, cancel, prepare
-from autosde.team import Team
+from autosde.team import MAX_ROUNDS, Team
 from helpers import FINDING, clean_scan, findings, repository, settings, verdict
 
 NOISE = {
@@ -87,6 +87,8 @@ class PlanTests(Fixture):
         everything = team.estimate(result, files, set(result.files()))
         self.assertGreater(everything[0], tokens_in)
         self.assertEqual(team.estimate(result, files, set()), (0, 0, 0))
+        # The approved "at most" covers a follow-up round of every specialist and the aggregator.
+        self.assertEqual(tokens_out, MAX_ROUNDS * (4000 + 1500))
 
     def test_only_approved_files_reach_the_specialists(self):
         model = self.model()

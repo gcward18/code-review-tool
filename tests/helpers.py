@@ -35,8 +35,14 @@ def findings(*items, summary="ok"):
     return {"findings": list(items), "summary": summary}
 
 
-def verdict(rejected=(), summary="One real defect."):
-    return {"rejected": [{"id": i, "reason": r} for i, r in rejected], "summary": summary}
+def verdict(rejected=(), summary="One real defect.", follow_ups=()):
+    """An aggregator reply: COMPLETE, or CONTINUE when `follow_ups` names (agent, files, question)."""
+    return {
+        "verdict": "CONTINUE" if follow_ups else "COMPLETE",
+        "rejected": [{"id": i, "reason": r} for i, r in rejected],
+        "follow_ups": [{"agent": a, "files": list(f), "question": q} for a, f, q in follow_ups],
+        "summary": summary,
+    }
 
 
 def git(root, *args):

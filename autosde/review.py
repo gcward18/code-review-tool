@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from autosde import git, tracing
 from autosde.knowledge import Knowledge
 from autosde.scan import ScanUnavailable, scanner
-from autosde.team import Team, TeamResult
+from autosde.team import Team, TeamResult, worst_case
 
 
 class ReviewError(RuntimeError):
@@ -178,7 +178,7 @@ def estimate_record(record, selection):
         if chosen:
             agents += 1
             chars += record["prompts"].get(agent, 0) + sum(record["sizes"].get(p, 0) for p in chosen)
-    return chars // 4, agents * 4000 + (1500 if agents else 0), agents
+    return worst_case(chars // 4, agents) + (agents,)
 
 
 def start(store, repo, range_spec, *, model_name, source=None):

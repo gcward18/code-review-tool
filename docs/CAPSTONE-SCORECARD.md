@@ -7,11 +7,11 @@ Scored on 2026-11-03 against the capstone rubric adapted for AutoSDE (`docs/CAPS
 | 1 | Multi-Agent Review Orchestration | 20% | 75 | 15.00 |
 | 2 | Aggregation Gate & Follow-up Loop | 20% | 100 | 20.00 |
 | 3 | Agent Contracts & Distributed Architecture | 15% | 100 | 15.00 |
-| 4 | Secure Code Capture & Context Tools | 15% | 50 | 7.50 |
+| 4 | Secure Code Capture & Context Tools | 15% | 75 | 11.25 |
 | 5 | Specialist Knowledge & Report Integrations | 10% | 75 | 7.50 |
 | 6 | Reliability, Budgets & Verification | 10% | 75 | 7.50 |
 | 7 | Deployment, Code Quality & Documentation | 10% | 75 | 7.50 |
-| | **Total** | **100%** | | **80.00** |
+| | **Total** | **100%** | | **83.75** |
 
 ## Remarks
 
@@ -30,16 +30,17 @@ Scored on 2026-11-03 against the capstone rubric adapted for AutoSDE (`docs/CAPS
 
 ### 3. Agent Contracts & Distributed Architecture: 100
 
-Scored as a design choice on its own terms, as the rubric does for one-attempt calls and the Git-backed context protocol: [decision 1](decisions/0001-agents-in-one-lambda.md) keeps every agent in the worker invocation, with its reasons, consequences and when to revisit it. Under the rubric's literal wording (each specialist its own deployed unit) this criterion would stay at 25 and the total would be 70.00.
+Scored as a design choice on its own terms, as the rubric does for one-attempt calls and the Git-backed context protocol: [decision 1](decisions/0001-agents-in-one-lambda.md) keeps every agent in the worker invocation, with its reasons, consequences and when to revisit it. Under the rubric's literal wording (each specialist its own deployed unit) this criterion would stay at 25 and the total would be 73.75.
 
 - **Meets Excellent on its own terms:** agents communicate only through the LangGraph graph's typed state and schema-checked replies, never directly. Every role's reply is held to a strict JSON schema; specialist findings and the aggregator verdict are validated in code before use. Each agent's model, prompt, extensions, knowledge bases, tracing and retry limit are configurable and versioned (DynamoDB in AWS) and change without a deploy. API and worker are separate Lambdas behind `live` aliases.
 - Every role's reply now goes through a validated contract: `parse_plan` checks the coordinator's plan (a plan that breaks it is treated as unavailable, and files are routed by type), `_findings` checks specialist findings, and `parse_verdict` checks the aggregator's verdict.
 - **Caveat:** the decision record is new, so its revisit triggers have not been exercised.
 
-### 4. Secure Code Capture & Context Tools: 50
+### 4. Secure Code Capture & Context Tools: 75
 
 - **Meets Excellent on capture:** `git.capture` reads committed objects (`git show head:path`) with external diff and textconv disabled, and GitHub capture uses exact commit IDs. File and total size limits apply. Every file is Gitleaks-scanned before planning and again after approval, and chat prompts and knowledge documents are scanned too. Rule-based flags keep low-value files away from the model. The store keeps findings, not source.
-- **Holds it at Satisfactory:** specialists cannot ask for more code. They see only their assigned files and diffs, so a change whose meaning depends on an unchanged caller, helper or test is judged without it. Knowledge-base retrieval adds reference passages, not repository code. Enabled LangSmith traces contain scanned source by design.
+- **Context tool:** a specialist can list `requested_context` (an unchanged file's path and up to 200 lines, with a reason). `context_reader` reads it at the review's head commit, locally or from GitHub, never from the working tree, and Gitleaks-scans it. It refuses changed files (so a file deselected at approval stays unsent), rule-flagged, binary, oversized and secret-bearing files, and non-repository paths. One context round per specialist task and 10 reads per review; each read is listed in the review's limits, and the cost estimate covers the extra call.
+- **Holds it at Good:** the aggregator cannot request code beyond the numbered lines around each finding, so it cannot read what a specialist read. Enabled LangSmith traces contain scanned source by design.
 
 ### 5. Specialist Knowledge & Report Integrations: 75
 
@@ -61,6 +62,6 @@ Scored as a design choice on its own terms, as the rubric does for one-attempt c
 
 | Change | Criteria | Gain |
 | --- | --- | --- |
-| Let specialists request unchanged committed files, read and scanned at the saved commits, under a fixed quota | 4 → 100, 1 helps | +7.50 |
+| Let the aggregator request the same unchanged files under the review's quota | 4 → 100 | +3.75 |
 | Enforce a per-review token and cost budget during the run, with a partial report when it runs out | 1, 6 | +5.00 to +7.50 |
 | Record one paid review per language and add a teardown section | 5, 6, 7 | +2.50 to +7.50 |

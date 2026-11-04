@@ -11,8 +11,9 @@ from autosde import agents
 from autosde import git as capture_git
 from autosde.db import Store
 from autosde.llm import ScriptedModel
-from autosde.review import ReviewError, run_review
-from autosde.team import MAX_ROUNDS, Team, TeamResult, changed_lines, numbered
+from autosde.review import ReviewError, context_reader, run_review
+from autosde.team import (MAX_CONTEXT_LINES, MAX_CONTEXT_READS, MAX_ROUNDS, ContextUnavailable, Team,
+                          TeamResult, changed_lines, numbered)
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
 
@@ -96,6 +97,78 @@ class TeamTests(unittest.TestCase):
         self.assertEqual(result.calls[0].status, "ok")  # valid shape; unknown names are dropped
         self.assertEqual(result.flagged, {})
         self.assertIn("Coordinator left 1 file(s) unassigned; routed by type.", result.limitations)
+
+    def ask_for(self, *ranges):
+        return dict(findings(), requested_context=[
+            {"path": path, "start_line": a, "end_line": b, "reason": "callers"} for path, a, b in ranges])
+
+    def test_specialist_reads_requested_context_once_and_then_answers(self):
+        reads = []
+
+        def reader(path, start, end):
+            reads.append((path, start, end))
+            if path == "secret.py":
+                raise ContextUnavailable("possible secret; not sent")
+            return f"    {start}| def helper(): ..."
+
+        model = ScriptedModel({"coordinator": [PLAN],
+                               "python": [self.ask_for(("helpers.py", 1, 900), ("calculator.py", 1, 5),
+                                                       ("secret.py", 1, 2)),
+                                          self.ask_for(("more.py", 1, 2)) | findings(FINDING)],
+                               "aggregator": [verdict()]})
+        result = Team(model, reader=reader).run(self.files())
+        self.assertEqual(reads, [("helpers.py", 1, MAX_CONTEXT_LINES), ("secret.py", 1, 2)])
+        second = [c for c in model.calls if c["role"] == "python"][1]["prompt"]
+        self.assertIn("[helpers.py lines 1-200]\n    1| def helper(): ...", second)
+        self.assertIn("[calculator.py lines 1-5] not available: it is a changed file", second)
+        self.assertIn("[secret.py lines 1-2] not available: possible secret; not sent", second)
+        self.assertEqual([c.focus for c in result.calls if c.agent == "python"],
+                         ["loop totals", "loop totals (with context)"])
+        self.assertIn("Context: python read helpers.py lines 1-200.", result.limitations)
+        self.assertEqual([(f.id, f.kept) for f in result.findings], [("python-1", True)])  # no 2nd round
+
+    def test_context_reads_stop_at_the_review_quota(self):
+        many = [(f"lib{i}.py", 1, 2) for i in range(MAX_CONTEXT_READS + 2)]
+        model = ScriptedModel({"coordinator": [PLAN], "python": [self.ask_for(*many), findings()]})
+        result = Team(model, reader=lambda path, a, b: "    1| x").run(self.files())
+        reads = [l for l in result.limitations if l.startswith("Context:")]
+        self.assertEqual(len(reads), MAX_CONTEXT_READS)
+        second = [c for c in model.calls if c["role"] == "python"][1]["prompt"]
+        self.assertEqual(second.count("context quota is used up"), 2)
+
+    def test_without_a_reader_requests_are_ignored(self):
+        model = ScriptedModel({"coordinator": [PLAN], "python": [self.ask_for(("x.py", 1, 2))]})
+        result = Team(model).run(self.files())
+        self.assertEqual([c.agent for c in result.calls], ["coordinator", "python"])
+
+    def test_context_reader_serves_unchanged_committed_files_only(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = repository(tmp.name, {"helpers.py": "def helper():\n    return 1\n",
+                                     "package-lock.json": "{}", "blob.bin": b"\0\1"})
+        # helpers.py and friends are part of the head commit but unchanged in a later commit.
+        git(repo, "commit", "--allow-empty", "-qm", "later")
+        (repo / "calculator.py").write_text("x = 1\n")
+        git(repo, "commit", "-qam", "change")
+        (repo / "helpers.py").write_text("dirty working tree edit\n")  # never read
+        changes = capture_git.capture(repo, "HEAD~1..HEAD")
+        scan = lambda text: ["generic-api-key"] if "SECRET" in text else []  # noqa: E731
+        read = context_reader(changes, scan, settings=settings(tmp.name))
+        self.assertEqual(read("helpers.py", 1, 5), "    1| def helper():\n    2|     return 1")
+        for path, why in (("calculator.py", "changed file"), ("package-lock.json", "file rules"),
+                          ("blob.bin", "binary"), ("missing.py", "not found"),
+                          ("../etc/passwd", "repository path"), (".git/config", "repository path")):
+            with self.assertRaises(ContextUnavailable) as refused:
+                read(path, 1, 2)
+            self.assertIn(why, str(refused.exception))
+        (repo / "keys.py").write_text("TOKEN = 'SECRET'\n")
+        git(repo, "add", "keys.py")
+        git(repo, "commit", "-qm", "keys")
+        git(repo, "commit", "--allow-empty", "-qm", "after keys")
+        changes = capture_git.capture(repo, "HEAD~1..HEAD")
+        with self.assertRaises(ContextUnavailable) as secret:
+            context_reader(changes, scan, settings=settings(tmp.name))("keys.py", 1, 1)
+        self.assertIn("possible secret", str(secret.exception))
 
     def test_fallbacks_and_scope(self):
         stray = dict(FINDING, file="other.py")

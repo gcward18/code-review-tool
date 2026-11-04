@@ -12,6 +12,7 @@ in another process; no checkpointer is needed since the plan is saved with the r
 
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,9 @@ CATEGORIES = ("correctness", "security", "reliability", "performance", "maintain
 # cost covers every retry and follow-up.
 MAX_ROUNDS = 3
 ACTIONS = ("question", "restart", "retry")
+# Unchanged-file reads per review, and lines per read. A specialist gets one context round per
+# task: it asks, the ranges are read and scanned, and its next reply is final.
+MAX_CONTEXT_READS, MAX_CONTEXT_LINES = 10, 200
 
 # Strict structured-output schemas: every property required, no extras.
 PLAN_SCHEMA = {
@@ -70,8 +74,22 @@ PLAN_SCHEMA = {
 FINDINGS_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["findings", "summary"],
+    "required": ["findings", "requested_context", "summary"],
     "properties": {
+        "requested_context": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "start_line", "end_line", "reason"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+            },
+        },
         "findings": {
             "type": "array",
             "items": {
@@ -265,8 +283,11 @@ def parse_verdict(data, candidates, plan, *, edited=(), failed=()):
 def worst_case(per_agent):
     """(input, output) token bound for a review, from (prompt tokens, attempts) per specialist:
     every round can run each specialist with all of its retries, then the aggregator."""
-    tokens_in = sum(tokens * attempts for tokens, attempts in per_agent) * MAX_ROUNDS
-    tokens_out = (sum(4000 * attempts for _, attempts in per_agent)
+    # Each task can take a second call with requested context (MAX_CONTEXT_LINES lines per read,
+    # about 12 characters a line), so attempts count twice.
+    context = MAX_CONTEXT_READS * MAX_CONTEXT_LINES * 12 // 4 if per_agent else 0
+    tokens_in = sum(tokens * attempts * 2 for tokens, attempts in per_agent) * MAX_ROUNDS + context
+    tokens_out = (sum(4000 * attempts * 2 for _, attempts in per_agent)
                   + (1500 if per_agent else 0)) * MAX_ROUNDS
     return tokens_in, tokens_out
 
@@ -274,6 +295,10 @@ def worst_case(per_agent):
 def _outcomes(old, new):
     """Fan-in for specialist branches; None clears it for the next round."""
     return [] if new is None else [*(old or []), *new]
+
+
+class ContextUnavailable(Exception):
+    """A requested range cannot be sent; its message is a short, safe reason."""
 
 
 @dataclass
@@ -348,9 +373,12 @@ class ReviewState(TypedDict):
 
 
 class Team:
-    def __init__(self, model, *, workers=4, config=None, retriever=None):
+    def __init__(self, model, *, workers=4, config=None, retriever=None, reader=None):
         # retriever(kb_ids, query) -> ranked chunks; None disables knowledge bases.
-        self.model, self.workers, self.retriever = model, workers, retriever
+        # reader(path, start, end) -> numbered, scanned text or raises ContextUnavailable;
+        # None means specialists cannot read unchanged files.
+        self.model, self.workers, self.retriever, self.reader = model, workers, retriever, reader
+        self._reads, self._reads_lock = 0, threading.Lock()
         self._fixed = config  # tests pass one; otherwise agents.json is re-read per review
         self.config = config or load_config()
         self.planner, self.reviewer = self._plan_graph(), self._review_graph()
@@ -552,17 +580,64 @@ class Team:
             )
         system = prompt("specialist.md", agent=agent, focus=focus or "general correctness")
         calls = []
-        for attempt in range(1, retries(self.config, agent) + 2):
-            call = Call(role="specialist", agent=agent, files=[f.path for f in files],
-                        focus=label or assignment["focus"])
+        findings, requests = self._attempts(agent, system, body, files, by_path,
+                                            label or assignment["focus"], calls)
+        if findings is None:
+            return calls, []
+        context = self._context(agent, requests, by_path, result) if requests else ""
+        if not context:
+            return calls, findings
+        body += "\n\n=== Requested context (unchanged files at the head commit) ===\n" + context + (
+            "\nThis is your final reply: report your complete findings for your files; "
+            "do not request more context.")
+        final, _ = self._attempts(agent, system, body, files, by_path,
+                                  (label or assignment["focus"] or "Review") + " (with context)", calls)
+        return calls, findings if final is None else final
+
+    def _attempts(self, agent, system, body, files, by_path, focus, calls):
+        """One call, retried up to the specialist's limit: (findings, requests) or (None, [])."""
+        for _ in range(retries(self.config, agent) + 1):
+            call = Call(role="specialist", agent=agent, files=[f.path for f in files], focus=focus)
             calls.append(call)
             data = self._ask(call, system, body, FINDINGS_SCHEMA, 4000)
             findings = self._findings(agent, data, by_path, call) if data is not None else None
             if findings is not None:
-                return calls, findings
+                requests = data.get("requested_context") if isinstance(data, dict) else None
+                return findings, requests if isinstance(requests, list) else []
             if call.status == "ok":
                 call.status, call.error = "failed", "reply did not match the findings contract"
-        return calls, []
+        return None, []
+
+    def _context(self, agent, requests, by_path, result):
+        """Read requested unchanged ranges under the review's quota; returns the prompt text."""
+        if self.reader is None:
+            return ""
+        parts = []
+        for item in requests:
+            try:
+                path, start, end = str(item["path"]), int(item["start_line"]), int(item["end_line"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            start, end = max(1, start), max(1, end)
+            end = min(max(start, end), start + MAX_CONTEXT_LINES - 1)
+            label = f"[{path} lines {start}-{end}]"
+            if path in by_path or path in result.files() or path in result.flagged:
+                parts.append(f"{label} not available: it is a changed file, sent only if approved")
+                continue
+            with self._reads_lock:
+                if self._reads >= MAX_CONTEXT_READS:
+                    parts.append(f"{label} not available: the review's context quota is used up")
+                    continue
+                self._reads += 1
+            try:
+                text = self.reader(path, start, end)
+            except ContextUnavailable as reason:
+                parts.append(f"{label} not available: {reason}")
+                continue
+            parts.append(f"{label}\n{text}")
+            with self._reads_lock:
+                result.limitations.append(f"Context: {agent} read {path} lines {start}-{end}.")
+        return "\n\n".join(parts)
 
     def _findings(self, agent, data, by_path, call):
         """The specialist's findings on its own files, or None when the reply breaks the schema."""
@@ -694,6 +769,7 @@ class Team:
         if not work:
             result.summary = result.summary or "No files were approved for review."
             return result
+        self._reads = 0
         self._invoke(self.reviewer, {"by_path": by_path, "result": result, "work": work,
                                      "outcomes": [], "round": 1})
         return result

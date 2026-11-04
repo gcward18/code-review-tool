@@ -27,6 +27,47 @@ class Pending:
         return self.team.estimate(self.result, self.changes.files, selection)
 
 
+def context_reader(changes, scan, *, settings, source=None):
+    """reader(path, start, end) for specialists: numbered head lines of an unchanged committed
+    file, Gitleaks-scanned. Changed, flagged, binary, oversized or secret-bearing files are
+    refused with a short reason; nothing is read from the working tree."""
+    import posixpath
+
+    from autosde.noise import flag
+    from autosde.team import ContextUnavailable
+
+    def read(path, start, end):
+        clean = posixpath.normpath(path)
+        if (not path or path.startswith(("/", "\\")) or clean.startswith("..") or clean != path
+                or any(part in ("", ".", "..", ".git") for part in path.split("/"))):
+            raise ContextUnavailable("not a repository path")
+        if any(f.path == path for f in changes.files):
+            raise ContextUnavailable("it is a changed file, sent only if approved")
+        if flag(path):
+            raise ContextUnavailable("excluded by the file rules")
+        try:
+            raw = (source.content(path, changes.head) if source is not None
+                   else git._git(changes.repo, "show", f"{changes.head}:{path}"))
+        except git.GitError:
+            raw = None
+        if raw is None:
+            raise ContextUnavailable("not found at the head commit")
+        if b"\0" in raw or len(raw) > settings.max_file_bytes:
+            raise ContextUnavailable("binary or too large")
+        try:
+            lines = raw.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            raise ContextUnavailable("not UTF-8 text") from None
+        if start > len(lines):
+            raise ContextUnavailable(f"the file has only {len(lines)} lines")
+        text = "\n".join(f"{n:5}| {lines[n - 1]}" for n in range(start, min(end, len(lines)) + 1))
+        if scan(text):
+            raise ContextUnavailable("possible secret; not sent")
+        return text
+
+    return read
+
+
 def retriever_for(store, model, scan, knowledge=None):
     """Hybrid knowledge base search, embedding queries with the review's model client.
     `knowledge` is a knowledge store (DynamoDB in AWS); locally the store's SQLite is used."""
@@ -68,7 +109,8 @@ def prepare(repo, range_spec, *, store, model, settings, scan=None, on_start=Non
                 item.head = ""
         model = tracing.traced(model, review_id=review_id, scan=scan,
                                name=f"{changes.name} {range_spec} (review {review_id})")
-        team = Team(model, retriever=retriever_for(store, model, scan))
+        team = Team(model, retriever=retriever_for(store, model, scan),
+                    reader=context_reader(changes, scan, settings=settings, source=source))
         result = team.plan(changes.files)
         store.save_plan(review_id, result, changes.files, input_price=settings.input_price,
                         output_price=settings.output_price)
@@ -234,7 +276,8 @@ def approve_review(review_id, repo, *, store, model, settings, selection=None, s
         _scan_files(changes, scan)
         model = tracing.traced(model, review_id=review_id, scan=scan, root=record.get("trace"),
                                name=f"{review['project']} {review['range_spec']} (review {review_id})")
-        team = Team(model, retriever=retriever_for(store, model, scan, knowledge))
+        team = Team(model, retriever=retriever_for(store, model, scan, knowledge),
+                    reader=context_reader(changes, scan, settings=settings, source=source))
         # The coordinator's call is already stored; carry its tokens into the totals.
         planned = Call(role="coordinator", agent="coordinator", files=[], stored=True,
                        input_tokens=review["input_tokens"], output_tokens=review["output_tokens"])

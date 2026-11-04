@@ -3,6 +3,7 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from autosde import git as capture_git
 from autosde.db import Store
 from autosde.llm import ScriptedModel
 from autosde.review import ReviewError, run_review
-from autosde.team import Team, changed_lines, numbered
+from autosde.team import Team, TeamResult, changed_lines, numbered
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
 
@@ -89,6 +90,27 @@ class TeamTests(unittest.TestCase):
         result = Team(model).run(self.files())
         self.assertEqual([(f.id, f.kept, f.rejection) for f in result.findings],
                          [("python-1", True, None), ("python-2", False, "duplicate")])
+
+    def test_review_is_a_langgraph_fan_out_that_keeps_plan_order(self):
+        both = threading.Barrier(2, timeout=5)  # passes only if both specialists run at once
+
+        class Concurrent(ScriptedModel):
+            def complete(self, **kwargs):
+                if kwargs["role"] != "aggregator":
+                    both.wait()
+                return super().complete(**kwargs)
+
+        model = Concurrent({"python": [findings(FINDING)], "javascript": [findings(FINDING)],
+                            "aggregator": [verdict()]})
+        team = Team(model)
+        self.assertEqual(set(team.reviewer.get_graph().nodes),
+                         {"__start__", "specialist", "aggregator", "__end__"})
+        result = TeamResult()
+        result.plan = {"python": {"files": ["calculator.py"], "focus": ""},
+                       "javascript": {"files": ["calculator.py"], "focus": ""}}
+        team.execute(result, self.files(), {"calculator.py"})
+        self.assertEqual([c.agent for c in result.calls], ["python", "javascript", "aggregator"])
+        self.assertEqual([f.id for f in result.findings], ["python-1", "javascript-1"])
 
     def test_numbered(self):
         self.assertEqual(numbered("a\nb"), "    1| a\n    2| b")

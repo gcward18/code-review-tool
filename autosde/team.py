@@ -1,11 +1,22 @@
-"""Coordinator -> parallel specialists -> aggregator, over one committed range."""
+"""Coordinator -> parallel specialists -> aggregator, over one committed range.
+
+Both steps are LangGraph graphs: planning is a one-node graph (the coordinator), and the
+approved review fans out to the specialists with `Send` before one aggregator node. Planning
+and review stay separate graphs because approval happens between them, possibly in another
+process; no checkpointer is needed since the plan is saved with the review.
+"""
 
 import json
+import operator
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated, Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
+from langsmith import tracing_context
 
 from autosde import agents
 from autosde.agents import SPECIALISTS, load_config, specialists
@@ -203,12 +214,71 @@ class TeamResult:
         return [f for f in self.findings if f.kept]
 
 
+class PlanState(TypedDict):
+    files: list
+    result: Any  # TeamResult, filled in place
+
+
+class ReviewState(TypedDict):
+    by_path: dict
+    result: Any
+    work: list  # [(agent, assignment)] on approved paths
+    outcomes: Annotated[list, operator.add]  # [(index, call, findings)] from each specialist
+
+
 class Team:
     def __init__(self, model, *, workers=4, config=None, retriever=None):
         # retriever(kb_ids, query) -> ranked chunks; None disables knowledge bases.
         self.model, self.workers, self.retriever = model, workers, retriever
         self._fixed = config  # tests pass one; otherwise agents.json is re-read per review
         self.config = config or load_config()
+        self.planner, self.reviewer = self._plan_graph(), self._review_graph()
+
+    def _plan_graph(self):
+        def coordinator(state):
+            self._plan(state["files"], state["result"])
+            return {}
+
+        graph = StateGraph(PlanState)
+        graph.add_node("coordinator", coordinator)
+        graph.add_edge(START, "coordinator")
+        graph.add_edge("coordinator", END)
+        return graph.compile()
+
+    def _review_graph(self):
+        def fan_out(state):
+            return [Send("specialist", {**state, "work": [(n, agent, item)]})
+                    for n, (agent, item) in enumerate(state["work"])]
+
+        def specialist(state):
+            [(n, agent, item)] = state["work"]
+            return {"outcomes": [(n, *self._review(agent, item, state["by_path"], state["result"]))]}
+
+        def aggregator(state):
+            result = state["result"]
+            for _, call, findings in sorted(state["outcomes"], key=lambda outcome: outcome[0]):
+                result.calls.append(call)
+                if call.status != "ok":
+                    result.limitations.append(f"{call.agent} specialist failed: {call.error}.")
+                for n, finding in enumerate(findings, 1):
+                    finding.id = f"{call.agent}-{n}"
+                    result.findings.append(finding)
+            self._aggregate(result, state["by_path"])
+            return {}
+
+        graph = StateGraph(ReviewState)
+        graph.add_node("specialist", specialist)
+        graph.add_node("aggregator", aggregator)
+        graph.add_conditional_edges(START, fan_out, ["specialist"])
+        graph.add_edge("specialist", "aggregator")
+        graph.add_edge("aggregator", END)
+        return graph.compile()
+
+    def _invoke(self, graph, state):
+        # Agent calls are traced by autosde.tracing (which withholds what gitleaks flags), so
+        # LangChain's own tracer stays off even if LANGSMITH_TRACING is set in the environment.
+        with tracing_context(enabled=False):
+            return graph.invoke(state, {"max_concurrency": self.workers})
 
     def _ask(self, call, system, text, schema, limit):
         override = self.config["agents"].get(call.agent, {}).get("model")
@@ -349,7 +419,7 @@ class Team:
             if f.skipped:
                 result.limitations.append(f"{f.path}: not reviewed ({f.skipped}).")
         if reviewable:
-            self._plan(reviewable, result)
+            self._invoke(self.planner, {"files": reviewable, "result": result})
         else:
             result.summary = "Nothing reviewable in this range."
         return result
@@ -387,16 +457,8 @@ class Team:
         if not work:
             result.summary = result.summary or "No files were approved for review."
             return result
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            outcomes = list(pool.map(lambda item: self._review(item[0], item[1], by_path, result), work))
-        for call, findings in outcomes:
-            result.calls.append(call)
-            if call.status != "ok":
-                result.limitations.append(f"{call.agent} specialist failed: {call.error}.")
-            for n, finding in enumerate(findings, 1):
-                finding.id = f"{call.agent}-{n}"
-                result.findings.append(finding)
-        self._aggregate(result, by_path)
+        self._invoke(self.reviewer, {"by_path": by_path, "result": result, "work": work,
+                                     "outcomes": []})
         return result
 
     def run(self, files, selection=None):

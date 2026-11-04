@@ -3,7 +3,8 @@ name = "autosde"
 version = "0.1.0"
 description = "Local code review of commit ranges by an agent team; results in SQLite"
 requires-python = ">=3.12"
-dependencies = []
+# The agent team runs as LangGraph graphs.
+dependencies = ["langgraph==1.2.16"]
 
 [project.optional-dependencies]
 # Only for reading the OpenAI key from AWS Secrets Manager.

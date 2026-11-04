@@ -11,7 +11,7 @@ A code reviewer for your git repositories, running locally or on AWS. A small te
 
 ### Agent team
 
-[`Team`](autosde/team.py) orchestrates the coordinator, parallel specialists and aggregator through the shared model adapter. Models, prompts, file extensions and attached knowledge bases are configurable per agent. The specialist pool runs up to four calls concurrently by default; additional specialists can be configured. The aggregator receives candidate findings and changed-line ranges, and is skipped when there are no findings.
+[`Team`](autosde/team.py) orchestrates the coordinator, parallel specialists and aggregator as [LangGraph](https://langchain-ai.github.io/langgraph/) graphs, through the shared model adapter. Planning is a one-node coordinator graph; after approval, the review graph fans out to the assigned specialists with `Send` and then runs the aggregator. The two graphs stay separate because approval can happen in another process (a separate Lambda in AWS), so no checkpointer is needed: the plan is saved with the review. Models, prompts, file extensions and attached knowledge bases are configurable per agent. The specialist pool runs up to four calls concurrently by default; additional specialists can be configured. The aggregator receives candidate findings and changed-line ranges, and is skipped when there are no findings.
 
 ```mermaid
 flowchart TD
@@ -203,7 +203,7 @@ Repeated completion requests reuse the registered document, and the worker's con
 git clone <this repository> autosde && cd autosde
 brew install gitleaks              # or set AUTOSDE_GITLEAKS=/path/to/gitleaks
 export OPENAI_API_KEY=...          # read from the environment, never stored
-pip install -e .                   # optional: adds the `autosde` command (or use `python3 -m autosde`)
+pip install -e .                   # installs LangGraph and adds the `autosde` command
 pip install -e '.[pdf]'            # optional: PDF uploads to knowledge bases (pypdf)
 autosde serve                      # open http://127.0.0.1:8765/
 ```

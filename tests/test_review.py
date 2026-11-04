@@ -77,6 +77,26 @@ class TeamTests(unittest.TestCase):
         self.assertIn('    4|         total = item["price"]', listing["code"])
         self.assertEqual(result.summary, "One real defect.")
 
+    def test_coordinator_plan_is_validated_as_a_contract(self):
+        broken = [{"assignments": "python", "flagged": [], "rationale": "x"},
+                  {"assignments": [{"agent": "python", "files": [4], "focus": ""}], "flagged": [],
+                   "rationale": "x"},
+                  {"assignments": [], "rationale": "no flagged list"}]
+        for plan in broken:
+            model = ScriptedModel({"coordinator": [plan], "python": [findings()]})
+            result = Team(model).run(self.files())
+            self.assertEqual((result.calls[0].status, result.calls[0].error),
+                             ("failed", "plan did not match the contract"))
+            self.assertIn("Coordinator unavailable; files were routed by type.", result.limitations)
+            self.assertEqual(result.plan, {"python": {"files": ["calculator.py"], "focus": ""}})
+        stray = dict(PLAN, assignments=[{"agent": "cobol", "files": ["calculator.py"], "focus": "x"},
+                                        {"agent": "python", "files": ["missing.py"], "focus": "y"}],
+                     flagged=[{"file": "elsewhere.py", "reason": "not changed"}])
+        result = Team(ScriptedModel({"coordinator": [stray], "python": [findings()]})).run(self.files())
+        self.assertEqual(result.calls[0].status, "ok")  # valid shape; unknown names are dropped
+        self.assertEqual(result.flagged, {})
+        self.assertIn("Coordinator left 1 file(s) unassigned; routed by type.", result.limitations)
+
     def test_fallbacks_and_scope(self):
         stray = dict(FINDING, file="other.py")
         wide = dict(FINDING, start_line=0, end_line=999)

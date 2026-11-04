@@ -16,6 +16,7 @@ HEAD = (
 )
 PLAN = {
     "assignments": [{"agent": "python", "files": ["calculator.py"], "focus": "loop totals"}],
+    "flagged": [],
     "rationale": "one python file",
 }
 FINDING = {

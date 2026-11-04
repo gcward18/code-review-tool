@@ -6,12 +6,12 @@ Scored on 2026-11-03 against the capstone rubric adapted for AutoSDE (`docs/CAPS
 | --- | --- | --- | --- | --- |
 | 1 | Multi-Agent Review Orchestration | 20% | 75 | 15.00 |
 | 2 | Aggregation Gate & Follow-up Loop | 20% | 100 | 20.00 |
-| 3 | Agent Contracts & Distributed Architecture | 15% | 75 | 11.25 |
+| 3 | Agent Contracts & Distributed Architecture | 15% | 100 | 15.00 |
 | 4 | Secure Code Capture & Context Tools | 15% | 50 | 7.50 |
 | 5 | Specialist Knowledge & Report Integrations | 10% | 75 | 7.50 |
 | 6 | Reliability, Budgets & Verification | 10% | 75 | 7.50 |
 | 7 | Deployment, Code Quality & Documentation | 10% | 75 | 7.50 |
-| | **Total** | **100%** | | **76.25** |
+| | **Total** | **100%** | | **80.00** |
 
 ## Remarks
 
@@ -28,12 +28,13 @@ Scored on 2026-11-03 against the capstone rubric adapted for AutoSDE (`docs/CAPS
 - A missing or invalid verdict withholds every unvalidated finding (listed as rejected, "aggregator verdict unavailable") and records a limitation. The aggregator has no way to mark findings verified.
 - **Caveat:** the loop is covered by scripted tests only; no real-model run has returned `CONTINUE`. A custom aggregator prompt saved on the Agents page in AWS overrides the bundled one.
 
-### 3. Agent Contracts & Distributed Architecture: 75
+### 3. Agent Contracts & Distributed Architecture: 100
 
-Scored as a design choice on its own terms, as the rubric does for one-attempt calls and the Git-backed context protocol: [decision 1](decisions/0001-agents-in-one-lambda.md) keeps every agent in the worker invocation, with its reasons, consequences and when to revisit it. Under the rubric's literal wording (each specialist its own deployed unit) this criterion would stay at 25.
+Scored as a design choice on its own terms, as the rubric does for one-attempt calls and the Git-backed context protocol: [decision 1](decisions/0001-agents-in-one-lambda.md) keeps every agent in the worker invocation, with its reasons, consequences and when to revisit it. Under the rubric's literal wording (each specialist its own deployed unit) this criterion would stay at 25 and the total would be 70.00.
 
 - **Meets Excellent on its own terms:** agents communicate only through the LangGraph graph's typed state and schema-checked replies, never directly. Every role's reply is held to a strict JSON schema; specialist findings and the aggregator verdict are validated in code before use. Each agent's model, prompt, extensions, knowledge bases, tracing and retry limit are configurable and versioned (DynamoDB in AWS) and change without a deploy. API and worker are separate Lambdas behind `live` aliases.
-- **Holds it at Good:** the coordinator's plan is still read leniently with `.get`, and the decision record is new, so its revisit triggers have not been exercised.
+- Every role's reply now goes through a validated contract: `parse_plan` checks the coordinator's plan (a plan that breaks it is treated as unavailable, and files are routed by type), `_findings` checks specialist findings, and `parse_verdict` checks the aggregator's verdict.
+- **Caveat:** the decision record is new, so its revisit triggers have not been exercised.
 
 ### 4. Secure Code Capture & Context Tools: 50
 
@@ -61,6 +62,5 @@ Scored as a design choice on its own terms, as the rubric does for one-attempt c
 | Change | Criteria | Gain |
 | --- | --- | --- |
 | Let specialists request unchanged committed files, read and scanned at the saved commits, under a fixed quota | 4 → 100, 1 helps | +7.50 |
-| Read the coordinator's plan through a validated contract, as the specialist and aggregator replies are | 3 → 100 | +3.75 |
 | Enforce a per-review token and cost budget during the run, with a partial report when it runs out | 1, 6 | +5.00 to +7.50 |
 | Record one paid review per language and add a teardown section | 5, 6, 7 | +2.50 to +7.50 |

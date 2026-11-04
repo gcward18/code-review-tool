@@ -198,6 +198,37 @@ def excerpt(text, start, end, margin=3, limit=40):
     return "\n".join(f"{n:5}| {lines[n - 1]}" for n in range(first, last + 1))
 
 
+def parse_plan(data, table, paths):
+    """The coordinator's plan as (assignments, flagged), or None when it breaks the contract.
+
+    Assignments are (agent, files, focus) for enabled specialists and changed paths only; each
+    path goes to its first assignment. Flags name changed paths."""
+    try:
+        if not isinstance(data["rationale"], str):
+            return None
+        flagged = {}
+        for item in data["flagged"]:
+            if not isinstance(item["file"], str) or not isinstance(item["reason"], str):
+                return None
+            if item["file"] in paths:
+                flagged[item["file"]] = item["reason"].strip()
+        assignments, assigned = [], set()
+        for item in data["assignments"]:
+            agent, files, focus = item["agent"], item["files"], item["focus"]
+            if not isinstance(agent, str) or not isinstance(focus, str) or not isinstance(files, list):
+                return None
+            if not all(isinstance(path, str) for path in files):
+                return None
+            chosen = [path for path in files if agent in table and path in paths
+                      and path not in assigned]
+            assigned.update(chosen)
+            if chosen:
+                assignments.append((agent, chosen, focus))
+        return assignments, flagged
+    except (KeyError, TypeError):
+        return None
+
+
 def parse_verdict(data, candidates, plan, *, edited=(), failed=()):
     """The aggregator's verdict as (rejected, refused, follow-ups, summary), or None.
 
@@ -443,17 +474,18 @@ class Team:
         data = self._ask(call, prompt("coordinator.md"), json.dumps({"changed_files": listing}),
                          plan_schema(table), 1500)
         paths = {f.path for f in files}
-        for item in (data or {}).get("flagged", []):
-            if item.get("file") in paths and item["file"] not in result.flagged:
-                result.flagged[item["file"]] = f"coordinator: {item.get('reason', '')}".strip()
+        parsed = None if data is None else parse_plan(data, table, paths)
+        if data is not None and parsed is None:
+            call.status, call.error = "failed", "plan did not match the contract"
+            data = None  # treated as unavailable: every file is routed by type
+        assignments, flags = parsed or ([], {})
+        for path, reason in flags.items():
+            if path not in result.flagged:
+                result.flagged[path] = f"coordinator: {reason}".rstrip(": ")
         plan, assigned = {}, set()
-        for item in (data or {}).get("assignments", []):
-            agent = item.get("agent")
-            for path in item.get("files", []):
-                if agent in table and path not in assigned and any(f.path == path for f in files):
-                    plan.setdefault(agent, {"files": [], "focus": item.get("focus", "")})
-                    plan[agent]["files"].append(path)
-                    assigned.add(path)
+        for agent, chosen, focus in assignments:
+            plan.setdefault(agent, {"files": [], "focus": focus})["files"].extend(chosen)
+            assigned.update(chosen)
         missing = [f.path for f in files if f.path not in assigned]
         if data is None:
             result.limitations.append("Coordinator unavailable; files were routed by type.")

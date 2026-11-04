@@ -37,3 +37,11 @@ Post-update checks: the final CDK diff reports zero differences (`.build/direct-
 - `UPDATE_COMPLETE`: API and worker `live` → version 5. Site republished (`index-BH9dzEZp.js`, with the Agents page's retries control); CloudFront invalidation `IWUUFQKJ4E3NHTD0IP5RWLOHI` completed. Logs: `.build/fbcc490-deploy.log`, `.build/fbcc490-publish.log`.
 - Live checks: homepage, bundle and cloud-mode `config.json` return 200; anonymous `/api/session` and `/api/models` return 401; `review-crew.vercel.app` redirects (307) to the site. Direct read-only invokes of the API `live` alias (version 5) with a synthetic `deploy-smoke-check` subject returned 200 for `/api/session` and `/api/agents`, which confirms the LangGraph runtime loads, the default specialist retry limit is 1, and the bundled aggregator prompt with edit refusals is in effect.
 - Not yet run: a signed-in review through the UI, and any paid inference with the new follow-up actions.
+
+## 2026-11-03: coordinator plan validation
+
+- Deployed `19155b2` at the owner's request, from a clean snapshot. Relative to the previous deployment, the only runtime change is `a24bfa3`: the coordinator's plan is validated as a contract, and a plan that breaks it falls back to routing by file type.
+- Asset rebuilt and verified; 144 backend and 13 infrastructure tests, infrastructure build, lint, format check and synth pass. `cdk diff` (`.build/19155b2-deployment-diff.txt`) changed only the API and worker code, added a version of each and moved both `live` aliases; no IAM, data, Cognito or CloudFront changes. Parameters reused and previous versions retained. The frontend did not change, so the site was not republished.
+- `UPDATE_COMPLETE`: API and worker `live` → version 6. Log: `.build/19155b2-deploy.log`.
+- Live checks: homepage 200, anonymous API 401, `review-crew.vercel.app` 307. Direct read-only invokes of the API `live` alias (version 6) with the synthetic `deploy-smoke-check` subject returned 200 for `/api/session` and `/api/agents`.
+- Not yet run: a signed-in review through the UI, and paid inference.

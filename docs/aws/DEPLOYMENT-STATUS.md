@@ -45,3 +45,9 @@ Post-update checks: the final CDK diff reports zero differences (`.build/direct-
 - `UPDATE_COMPLETE`: API and worker `live` → version 6. Log: `.build/19155b2-deploy.log`.
 - Live checks: homepage 200, anonymous API 401, `review-crew.vercel.app` 307. Direct read-only invokes of the API `live` alias (version 6) with the synthetic `deploy-smoke-check` subject returned 200 for `/api/session` and `/api/agents`.
 - Not yet run: a signed-in review through the UI, and paid inference.
+
+## 2026-11-03: specialist context reads and the review budget
+
+- Deployed `15fa977` (Lambda code only), built from a clean snapshot so uncommitted local edits were not packaged. `cdk diff` showed only new API and worker code and versions and their `live` aliases; no IAM, data, Cognito or CloudFront changes. Previous versions are retained.
+- Adds unchanged-file context reads for specialists (scanned, 10 reads of up to 200 lines per review) and enforcement of the approved "at most" budget during each review. Model, price and secret parameters were kept.
+- Live checks: site and runtime config 200, anonymous API 401, worker `live` alias at version 7. No paid inference was run.

@@ -6,7 +6,7 @@
 - `frontend/src/`: React source. Put reusable UI in components, stateful shared behavior in hooks, and pure contracts such as URL parsing in focused modules. Group related feature files into directories as a feature grows; avoid dumping unrelated helpers into a generic utilities module.
 - `autosde/static/`: generated frontend distribution. Change frontend source and rebuild; never hand-edit generated assets.
 - `tests/`: deterministic Python unit and integration tests. Frontend tests live beside the behavior they validate.
-- `docs/`: architecture and feature documentation. `notebooks/`: exploratory workflows, not production dependencies.
+- `docs/`: architecture and feature documentation; architectural decisions in `docs/decisions/`. `notebooks/`: exploratory workflows, not production dependencies.
 
 ## Implementation practices
 - Prefer small functions and components with one responsibility, explicit inputs and outputs, and clear names. Reuse existing abstractions before adding dependencies or new ones.
@@ -14,7 +14,7 @@
 - Handle loading, empty, missing-resource and error states. Cancel or ignore stale asynchronous responses when the selected resource changes; clean up subscriptions and timers.
 - Use semantic, keyboard-accessible controls with labels. Maintain existing responsive layouts and theme tokens.
 - Validate input at API boundaries. Never log or commit credentials, `.env` contents, source payloads or local databases. Preserve secret scanning and explicit review approval before sending code.
-- Keep Python runtime dependencies minimal (standard library by default). Avoid broad refactors for a narrow feature; document meaningful architectural changes and URL contracts.
+- Keep Python runtime dependencies minimal: the standard library plus LangGraph, which runs the agent team. Test-only packages go in the `dev` extra. Avoid broad refactors for a narrow feature; document meaningful architectural changes and URL contracts.
 - Preserve existing user changes. Do not reset unrelated files or overwrite local configuration.
 
 ## Validation and delivery

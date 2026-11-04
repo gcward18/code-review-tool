@@ -11,6 +11,8 @@ dependencies = ["langgraph==1.2.16"]
 aws = ["boto3"]
 # Only for extracting text from PDF uploads to knowledge bases.
 pdf = ["pypdf==6.20.1"]
+# Only for the test suite: in-memory DynamoDB and S3.
+dev = ["moto[dynamodb,s3]==5.1.22"]
 
 [project.scripts]
 autosde = "autosde.cli:main"

@@ -33,6 +33,8 @@ _NAME = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
 CORE = ("coordinator", "aggregator", "chat")  # not file specialists
+# Extra attempts after a specialist call fails or breaks its contract.
+DEFAULT_RETRIES, MAX_RETRIES = 1, 3
 
 
 class ConfigError(ValueError):
@@ -40,7 +42,8 @@ class ConfigError(ValueError):
 
 
 def defaults():
-    agents = {name: {"enabled": True, "extensions": list(ext), "model": None}
+    agents = {name: {"enabled": True, "extensions": list(ext), "model": None,
+                     "retries": DEFAULT_RETRIES}
               for name, ext in SPECIALISTS.items()}
     agents["coordinator"] = {"enabled": True, "model": None}
     agents["aggregator"] = {"enabled": True, "model": None}
@@ -60,7 +63,7 @@ def validate(config):
         if not isinstance(name, str) or not _NAME.fullmatch(name) or not isinstance(item, dict):
             raise ConfigError(f"Invalid agent entry: {name!r}")
         entry = clean["agents"].setdefault(name, {"enabled": True, "extensions": [], "model": None,
-                                                         "trace": True})
+                                                         "retries": DEFAULT_RETRIES, "trace": True})
         if "knowledge" in item:
             ids = item["knowledge"]
             if not isinstance(ids, list) or len(ids) > 20 or any(type(i) is not int or i < 1 for i in ids):
@@ -79,6 +82,11 @@ def validate(config):
             if model is not None and (not isinstance(model, str) or not _MODEL.fullmatch(model)):
                 raise ConfigError(f"{name}: invalid model id.")
             entry["model"] = model
+        if "retries" in item and name not in CORE:
+            retries = item["retries"]
+            if type(retries) is not int or not 0 <= retries <= MAX_RETRIES:
+                raise ConfigError(f"{name}: retries must be a whole number from 0 to {MAX_RETRIES}.")
+            entry["retries"] = retries
         if "extensions" in item and name not in CORE:
             extensions = item["extensions"]
             if not isinstance(extensions, list) or len(extensions) > 50:
@@ -156,6 +164,11 @@ def read_text(name):
             return saved
     path = PROMPTS / name
     return path.read_text() if path.exists() else ""
+
+
+def retries(config, agent):
+    """Extra attempts this specialist gets after a failed call."""
+    return config["agents"].get(agent, {}).get("retries", DEFAULT_RETRIES)
 
 
 def specialists(config):

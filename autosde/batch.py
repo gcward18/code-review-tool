@@ -12,6 +12,7 @@ import time
 
 from autosde import git
 from autosde.noise import flag
+from autosde.agents import load_config, retries
 from autosde.team import MAX_ROUNDS, route
 
 MODES = {
@@ -58,6 +59,12 @@ def commits_in(repo, base, head, mode, every=1, limit=20):
     return shas[-limit:]
 
 
+def most_attempts(agents):
+    """The largest attempt count among these specialists, so the cap covers their retries."""
+    config = load_config()
+    return max((retries(config, agent) + 1 for agent in agents), default=1)
+
+
 def estimate(repo, sha, settings):
     """Rough cost of reviewing one commit, from its changed files (local, nothing sent)."""
     try:
@@ -67,10 +74,12 @@ def estimate(repo, sha, settings):
         return None
     sendable = [f for f in changes.files if not f.skipped and not flag(f.path)]
     chars = sum(len(f.head) + len(f.diff) for f in sendable)
-    specialists = len({route(f.path) for f in sendable})
-    # The coordinator once, then up to MAX_ROUNDS of specialists and aggregator.
-    incoming = (chars // 4 + 1200 * (specialists + 1)) * MAX_ROUNDS + 1200 + 60 * len(changes.files)
-    outgoing = 1500 + (4000 * specialists + (1500 if specialists else 0)) * MAX_ROUNDS
+    routed = {route(f.path) for f in sendable}
+    specialists, attempts = len(routed), most_attempts(routed)
+    # The coordinator once, then up to MAX_ROUNDS of specialists (with their retries) and the
+    # aggregator.
+    incoming = (chars // 4 + 1200 * (specialists + 1)) * MAX_ROUNDS * attempts + 1200 + 60 * len(changes.files)
+    outgoing = 1500 + (4000 * specialists * attempts + (1500 if specialists else 0)) * MAX_ROUNDS
     price = lambda i, o: (i * settings.input_price + o * settings.output_price) / 1_000_000
     return {"files": len(changes.files), "reviewable": len(sendable), "specialists": specialists,
             "input_tokens": incoming, "max_output_tokens": outgoing,
@@ -87,9 +96,12 @@ def estimate_remote(source, sha, settings):
     sendable = [f for f in files if f.get("patch") and f["status"] != "removed" and not flag(f["filename"])]
     chars = sum(len(f["patch"]) * 4 for f in sendable)  # head files are usually larger than their patch
     chars = min(chars, settings.max_total_bytes * 2)
-    specialists = len({route(f["filename"]) for f in sendable})
-    incoming = (chars // 4 + 1200 * (specialists + 1)) * MAX_ROUNDS + 1200 + 60 * len(files)
-    outgoing = 1500 + (4000 * specialists + (1500 if specialists else 0)) * MAX_ROUNDS
+    routed = {route(f["filename"]) for f in sendable}
+    specialists, attempts = len(routed), most_attempts(routed)
+    # The coordinator once, then up to MAX_ROUNDS of specialists (with their retries) and the
+    # aggregator.
+    incoming = (chars // 4 + 1200 * (specialists + 1)) * MAX_ROUNDS * attempts + 1200 + 60 * len(files)
+    outgoing = 1500 + (4000 * specialists * attempts + (1500 if specialists else 0)) * MAX_ROUNDS
     price = lambda i, o: (i * settings.input_price + o * settings.output_price) / 1_000_000
     return {"files": len(files), "reviewable": len(sendable), "specialists": specialists,
             "input_tokens": incoming, "max_output_tokens": outgoing,

@@ -7,11 +7,12 @@ import threading
 import unittest
 from pathlib import Path
 
+from autosde import agents
 from autosde import git as capture_git
 from autosde.db import Store
 from autosde.llm import ScriptedModel
 from autosde.review import ReviewError, run_review
-from autosde.team import Team, TeamResult, changed_lines, numbered
+from autosde.team import MAX_ROUNDS, Team, TeamResult, changed_lines, numbered
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
 
@@ -114,14 +115,91 @@ class TeamTests(unittest.TestCase):
 
     def test_follow_ups_stop_at_the_round_cap(self):
         ask = verdict(follow_ups=[("python", ["calculator.py"], "Check again?")])
-        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING), findings(FINDING)],
-                               "aggregator": [ask, ask]})
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)] * MAX_ROUNDS,
+                               "aggregator": [ask] * MAX_ROUNDS})
         result = Team(model).run(self.files())
         self.assertEqual([c.agent for c in result.calls],
-                         ["coordinator", "python", "aggregator", "python", "aggregator"])
-        self.assertIn("Review stopped after 2 aggregation rounds; follow-ups were not run.",
+                         ["coordinator"] + ["python", "aggregator"] * MAX_ROUNDS)
+        self.assertIn(f"Review stopped after {MAX_ROUNDS} aggregation rounds; follow-ups were not run.",
                       result.limitations)
-        self.assertEqual([f.kept for f in result.findings], [False, True])
+        self.assertEqual([f.kept for f in result.findings], [False] * (MAX_ROUNDS - 1) + [True])
+
+    def test_a_failed_specialist_call_is_retried_up_to_its_limit(self):
+        model = ScriptedModel({"coordinator": [PLAN], "python": ["not json", findings(FINDING)],
+                               "aggregator": [verdict()]})
+        result = Team(model).run(self.files())
+        attempts = [c for c in result.calls if c.agent == "python"]
+        self.assertEqual([(c.status, c.error) for c in attempts],
+                         [("failed", "reply was not JSON"), ("ok", None)])
+        self.assertEqual([(f.id, f.kept) for f in result.findings], [("python-1", True)])
+
+        config = agents.defaults()
+        config["agents"]["python"]["retries"] = 0
+        model = ScriptedModel({"coordinator": [PLAN], "python": [{"findings": "wrong"}, findings(FINDING)]})
+        result = Team(model, config=config).run(self.files())
+        self.assertEqual([c.status for c in result.calls if c.agent == "python"], ["failed"])
+        self.assertIn("python specialist failed: reply did not match the findings contract.",
+                      result.limitations)
+
+    def test_retries_are_validated_per_specialist(self):
+        config = agents.defaults()
+        config["agents"]["python"]["retries"] = 2
+        self.assertEqual(agents.retries(agents.validate(config), "python"), 2)
+        self.assertEqual(agents.retries(agents.defaults(), "go"), agents.DEFAULT_RETRIES)
+        for bad in (-1, agents.MAX_RETRIES + 1, 1.5, True, "2"):
+            config["agents"]["python"]["retries"] = bad
+            with self.assertRaises(agents.ConfigError):
+                agents.validate(config)
+
+    def test_restart_reviews_again_without_the_earlier_findings(self):
+        restart = verdict(follow_ups=[("restart", "python", ["calculator.py"], "Focus on the loop.")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING), findings(FINDING)],
+                               "aggregator": [restart, verdict()]})
+        result = Team(model).run(self.files())
+        second = [c for c in model.calls if c["role"] == "python"][1]
+        self.assertIn("review these files again from the start", second["prompt"])
+        self.assertIn("Focus on the loop.", second["prompt"])
+        self.assertNotIn('"id": "python-1"', second["prompt"])
+        self.assertEqual(result.calls[3].focus, "Restart: Focus on the loop.")
+        self.assertEqual([(f.id, f.kept, f.rejection) for f in result.findings],
+                         [("python-1", False, "replaced after follow-up"), ("python-2", True, None)])
+
+    def test_aggregator_can_retry_a_specialist_that_failed(self):
+        config = agents.defaults()
+        config["agents"]["python"]["retries"] = 0
+        retry = verdict(follow_ups=[("retry", "python", [], "")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": ["not json", findings(FINDING)],
+                               "aggregator": [retry, verdict()]})
+        result = Team(model, config=config).run(self.files())
+        self.assertEqual([(c.agent, c.status) for c in result.calls],
+                         [("coordinator", "ok"), ("python", "failed"), ("aggregator", "ok"),
+                          ("python", "ok"), ("aggregator", "ok")])
+        first = json.loads([c for c in model.calls if c["role"] == "aggregator"][0]["prompt"])
+        self.assertEqual(first["failed_specialists"], {"python": ["calculator.py"]})
+        self.assertEqual(result.calls[3].focus, "Retry after failure")
+        self.assertEqual([(f.id, f.kept) for f in result.findings], [("python-1", True)])
+
+    def test_only_failed_specialists_can_be_retried(self):
+        retry = verdict(follow_ups=[("retry", "python", ["calculator.py"], "")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],
+                               "aggregator": [retry]})
+        result = Team(model).run(self.files())  # python succeeded, so the retry is invalid
+        self.assertEqual([(f.kept, f.rejection) for f in result.findings],
+                         [(False, "aggregator verdict unavailable")])
+
+    def test_aggregator_can_refuse_a_follow_up_edit(self):
+        weaker = dict(FINDING, title="Maybe an issue", description="Could potentially be wrong.")
+        ask = verdict(follow_ups=[("python", ["calculator.py"], "Is the overwrite real?")])
+        refuse = verdict(refused=[("python", "the original finding was correct")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING), findings(weaker)],
+                               "aggregator": [ask, refuse]})
+        result = Team(model).run(self.files())
+        judged = json.loads([c for c in model.calls if c["role"] == "aggregator"][1]["prompt"])
+        self.assertEqual([f["id"] for f in judged["edits"]["python"]["replaced"]], ["python-1"])
+        self.assertEqual(judged["edits"]["python"]["new_ids"], ["python-2"])
+        self.assertEqual([(f.id, f.kept, f.rejection) for f in result.findings],
+                         [("python-1", True, None),
+                          ("python-2", False, "edit refused: the original finding was correct")])
 
     def test_invalid_verdicts_withhold_findings(self):
         outside = verdict(follow_ups=[("java", ["calculator.py"], "Is this Java?")])  # not on the team

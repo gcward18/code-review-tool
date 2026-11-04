@@ -35,12 +35,16 @@ def findings(*items, summary="ok"):
     return {"findings": list(items), "summary": summary}
 
 
-def verdict(rejected=(), summary="One real defect.", follow_ups=()):
-    """An aggregator reply: COMPLETE, or CONTINUE when `follow_ups` names (agent, files, question)."""
+def verdict(rejected=(), summary="One real defect.", follow_ups=(), refused=()):
+    """An aggregator reply: COMPLETE, or CONTINUE when `follow_ups` names (agent, files, question),
+    or (action, agent, files, question) for a restart or retry. `refused` names (agent, reason)."""
+    items = [item if len(item) == 4 else ("question", *item) for item in follow_ups]
     return {
-        "verdict": "CONTINUE" if follow_ups else "COMPLETE",
+        "verdict": "CONTINUE" if items else "COMPLETE",
         "rejected": [{"id": i, "reason": r} for i, r in rejected],
-        "follow_ups": [{"agent": a, "files": list(f), "question": q} for a, f, q in follow_ups],
+        "refused": [{"agent": a, "reason": r} for a, r in refused],
+        "follow_ups": [{"action": act, "agent": a, "files": list(f), "question": q}
+                       for act, a, f, q in items],
         "summary": summary,
     }
 

@@ -16,10 +16,17 @@ Reject, with a short reason naming the rule:
 
 Do not reject a finding only because it is low severity. When unsure whether a defect is real, keep it.
 
+Follow-up edits: from the second round, `edits` shows, per specialist, the findings its follow-up replaced (`replaced`) and the ids of its new ones (`new_ids`, among `findings`). If the new findings are worse than the ones they replaced (they drop a real defect, turn a concrete finding vague, or contradict the code), add the specialist to `refused` with a short reason: its replaced findings are restored and its new ones are rejected. You can still reject individual restored or new findings by id.
+
+Failed specialists: `failed_specialists` lists specialists whose every attempt failed, with their files. Their files have not been reviewed.
+
 Verdict:
-- `COMPLETE` when you can judge every finding. Leave `follow_ups` empty.
-- `CONTINUE` only when a specific specialist must answer a specific question before you can judge, for example whether a finding holds for an input the code shows, or whether a defect it implies on a changed line was missed. Each follow-up names one agent from `specialists`, files it reviewed, and one concrete question. That specialist reviews its files again and returns its complete findings for them, which replace its earlier ones. You then judge again.
-- `round` and `max_rounds` say where the review stands. In the last round, return `COMPLETE`; follow-ups would not run. Reject or keep findings in the same reply either way.
+- `COMPLETE` when you can judge every finding and no further review is needed. Leave `follow_ups` empty.
+- `CONTINUE` when a specialist must do more first. Each follow-up names one agent from `specialists` (or `failed_specialists` for a retry), files it reviewed, and an action:
+  - `question`: a specific question to answer before you can judge, for example whether a finding holds for an input the code shows, or whether a defect it implies on a changed line was missed. The specialist sees its current findings and returns its complete findings for those files, which replace its earlier ones.
+  - `restart`: its work on those files is unusable (off-topic, inconsistent with the code, or mostly speculative); it reviews them again from the start, without its earlier findings. Give the reason in `question`.
+  - `retry`: a failed specialist runs its original assignment again. Use it when the files still need review; `question` may be empty.
+- `round` and `max_rounds` say where the review stands. In the last round, return `COMPLETE`; follow-ups would not run. Reject, keep or refuse in the same reply either way.
 
 Summary: exactly two sentences. The first states the most important problem in the change (or that none was found). The second states the overall risk of merging as-is and what to fix first. Name files, not finding ids.
 

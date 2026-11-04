@@ -60,7 +60,7 @@ export default function Agents({ defaultModel, selected = "python", onSelect }) 
       return setStatus({ kind: "error", text: "Use a new lowercase name (letters, digits, _)." });
     }
     edit((d) => {
-      d.config.agents[name] = { enabled: true, extensions: [], model: null };
+      d.config.agents[name] = { enabled: true, extensions: [], model: null, retries: 1 };
       d.focus[name] = "";
     });
     setNewName("");
@@ -155,6 +155,15 @@ export default function Agents({ defaultModel, selected = "python", onSelect }) 
                 </label>
               )}
               {modelField(name)}
+              {!core && (
+                <label className="field">
+                  <span className="small muted">Retries after a failed call</span>
+                  <select value={item.retries ?? 1}
+                    onChange={(e) => agent(name, "retries", Number(e.target.value))}>
+                    {[0, 1, 2, 3].map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </label>
+              )}
               <label className="toggle small">
                 <input type="checkbox" checked={item.trace !== false}
                   onChange={(e) => agent(name, "trace", e.target.checked)} />

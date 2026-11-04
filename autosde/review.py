@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from autosde import git, tracing
 from autosde.knowledge import Knowledge
 from autosde.scan import ScanUnavailable, scanner
+from autosde.agents import load_config, retries
 from autosde.team import Team, TeamResult, worst_case
 
 
@@ -172,13 +173,13 @@ def default_selection(record):
 
 def estimate_record(record, selection):
     """(input tokens, output tokens, agents) for approving `selection`, from the saved plan."""
-    chars, agents = 0, 0
+    config, per_agent = load_config(), []
     for agent, item in record["plan"].items():
         chosen = [p for p in item["files"] if p in selection]
         if chosen:
-            agents += 1
-            chars += record["prompts"].get(agent, 0) + sum(record["sizes"].get(p, 0) for p in chosen)
-    return worst_case(chars // 4, agents) + (agents,)
+            chars = record["prompts"].get(agent, 0) + sum(record["sizes"].get(p, 0) for p in chosen)
+            per_agent.append((chars // 4, retries(config, agent) + 1))
+    return worst_case(per_agent) + (len(per_agent),)
 
 
 def start(store, repo, range_spec, *, model_name, source=None):

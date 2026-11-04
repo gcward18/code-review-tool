@@ -2,16 +2,16 @@
 
 A code reviewer for your git repositories, running locally or on AWS. A small team of AI agents reviews a commit range, you approve which files the specialists receive, and every review is saved for browsing, querying and chat.
 
-- **Agent team:** a coordinator assigns changed files to language specialists (Python, JavaScript, TypeScript, Java, Go, C#, and a general catch-all). They review in parallel, and an aggregator checks their findings against the code, rejects weak ones, and can send a specialist one follow-up question before deciding. Fixes come back as diffs with line numbers.
+- **Agent team:** a coordinator assigns changed files to language specialists (Python, JavaScript, TypeScript, Java, Go, C#, and a general catch-all). They review in parallel, and an aggregator checks their findings against the code, rejects weak ones, and can ask a specialist a follow-up question, restart its work, retry it after a failure, or refuse the edits a follow-up made. Each specialist call is retried up to that specialist's retry limit. Fixes come back as diffs with line numbers.
 - **Approval first:** rules flag files that rarely hold defects (lockfiles, build output, IDE settings, minified bundles). The coordinator uses file metadata to plan assignments; that model call uses tokens. You then select files and approve the estimated specialist review cost before source code reaches the specialists.
 - **Storage and privacy:** local mode uses SQLite; AWS uses DynamoDB and private S3 storage. Reviewed source files and diffs are read from git or GitHub when needed, rather than saved as review payloads. Gitleaks scans review files before model use; optional LangSmith traces can contain scanned prompts, code and replies. Uploaded knowledge documents have their own storage flow below.
-- **Small:** Python 3.12+ with a standard-library core and optional PDF/AWS dependencies. The React web UI is prebuilt, so no Node is needed to run it locally.
+- **Small:** Python 3.12+ with LangGraph as the only required dependency, and optional PDF/AWS dependencies. The React web UI is prebuilt, so no Node is needed to run it locally.
 
 ## Architecture
 
 ### Agent team
 
-[`Team`](autosde/team.py) orchestrates the coordinator, parallel specialists and aggregator as [LangGraph](https://langchain-ai.github.io/langgraph/) graphs, through the shared model adapter. Planning is a one-node coordinator graph; after approval, the review graph fans out to the assigned specialists with `Send`, collects their findings and runs the aggregator. When the aggregator returns `CONTINUE`, the graph loops back to the specialists it names, with its question, on files they already reviewed; their answer replaces their earlier findings on those files, and the aggregator judges again. Reviews stop after two aggregation rounds (`MAX_ROUNDS`), and the approved cost estimate covers that second round. The two graphs stay separate because approval can happen in another process (a separate Lambda in AWS), so no checkpointer is needed: the plan is saved with the review. Models, prompts, file extensions and attached knowledge bases are configurable per agent. The specialist pool runs up to four calls concurrently by default; additional specialists can be configured. The aggregator receives candidate findings with the numbered code around each one, the changed-line ranges and who reviewed what, and is skipped when there are no findings. If its reply is missing or breaks its contract, every unvalidated finding is withheld (listed as rejected, with that reason) rather than kept.
+[`Team`](autosde/team.py) orchestrates the coordinator, parallel specialists and aggregator as [LangGraph](https://langchain-ai.github.io/langgraph/) graphs, through the shared model adapter. Planning is a one-node coordinator graph; after approval, the review graph fans out to the assigned specialists with `Send`, collects their findings and runs the aggregator. When the aggregator returns `CONTINUE`, the graph loops back to the specialists it names, on files they already reviewed, with one of three actions: answer a `question` (seeing their current findings), `restart` the work from scratch, or `retry` a specialist whose every attempt failed. A follow-up answer replaces that specialist's earlier findings on those files; in the next round the aggregator sees both versions and can refuse the edit, which restores the originals and rejects the new findings. Reviews stop after three aggregation rounds (`MAX_ROUNDS`). Each specialist call that fails or breaks its schema is retried up to that specialist's `retries` setting (0–3, default 1, set on the Agents page), and each attempt is recorded as its own agent run. The approved "at most" estimate covers every round with every retry. The two graphs stay separate because approval can happen in another process (a separate Lambda in AWS), so no checkpointer is needed: the plan is saved with the review. Models, prompts, file extensions and attached knowledge bases are configurable per agent. The specialist pool runs up to four calls concurrently by default; additional specialists can be configured. The aggregator receives candidate findings with the numbered code around each one, the changed-line ranges and who reviewed what, and is skipped when there are no findings. If its reply is missing or breaks its contract, every unvalidated finding is withheld (listed as rejected, with that reason) rather than kept. All agents run in the worker invocation by design; see [decision 1](docs/decisions/0001-agents-in-one-lambda.md).
 
 ```mermaid
 flowchart TD
@@ -30,7 +30,7 @@ flowchart TD
     Reload --> Python & Web & Other
     Knowledge["Attached knowledge bases<br/>Vector + BM25 retrieval, fused by RRF"] -. Relevant passages .-> Python & Web & Other
     Python & Web & Other --> Aggregator["Aggregator<br/>Check findings against the code,<br/>keep or reject with reasons"]
-    Aggregator -. "CONTINUE: follow-up question<br/>(one more round at most)" .-> Python & Web & Other
+    Aggregator -. "CONTINUE: question, restart or retry<br/>(two more rounds at most)" .-> Python & Web & Other
     Aggregator --> History[("Review history<br/>Findings, runs, tokens and cost")]
     History --> Results["Review UI, CLI and SARIF"]
     History --> Chat["Chat agent<br/>Home or project questions"]
@@ -136,11 +136,11 @@ sequenceDiagram
     opt Candidate findings exist
         Team->>Model: Aggregator call with findings, their numbered code and changed-line ranges
         Model-->>Team: Verdict, rejections, reasons and summary
-        opt CONTINUE with follow-up questions (one round at most)
-            Team->>Model: Named specialists with the question, on files they reviewed
+        loop CONTINUE: question, restart or retry (two more rounds at most)
+            Team->>Model: Named specialists on files they reviewed
             Model-->>Team: Their complete findings for those files
-            Team->>Model: Aggregator judges again
-            Model-->>Team: Final verdict, rejections and summary
+            Team->>Model: Aggregator judges again, seeing replaced findings
+            Model-->>Team: Verdict, rejections, refused edits and summary
         end
     end
     Team-->>Worker: Findings, agent runs and usage
@@ -290,8 +290,11 @@ The database stores projects, reviews (range, status, tokens, cost), one row per
 Prompts live in `autosde/prompts/` and are re-read on every call. `notebooks/team.ipynb` runs a free scripted team, then an opt-in paid review.
 
 ```sh
-python3 -m unittest discover -s tests -t tests   # no network or API key needed
+pip install -e ".[dev]"                          # test-only: moto for the DynamoDB and S3 tests
+AUTOSDE_GITLEAKS="$(command -v gitleaks)" python3 -m unittest discover -s tests -t tests   # no network or API key needed
 ```
+
+Without `AUTOSDE_GITLEAKS`, the five AWS Lambda end-to-end tests are skipped.
 
 The frontend is in `frontend/` (Vite + React). The built UI is committed in `autosde/static/`. After UI changes:
 

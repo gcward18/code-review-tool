@@ -57,3 +57,9 @@ Post-update checks: the final CDK diff reports zero differences (`.build/direct-
 - Deployed `3466c4e` (Lambda code only) from a clean snapshot. `cdk diff` showed only new API and worker code and versions and their `live` aliases; previous versions are retained.
 - The aggregator now sees ten lines either side of each finding and can request more code once per round before judging. LangSmith tracing was turned on in the deployed agent settings (project `autosde`, every agent traced).
 - Live checks: site and runtime config 200, anonymous API 401. No paid inference was run.
+
+## 2026-11-05: Angular and React specialists
+
+- Deployed `59d8ecf` (Lambda code only) from a clean snapshot and published its frontend (`index-Bl11TrF4.js`). `cdk diff` showed only new API and worker code and versions and their `live` aliases; previous versions and site assets are retained.
+- Angular and React files now get a framework specialist beside their language specialist; the Agents page lists both with how they are chosen.
+- Live checks: the site serves the new build, runtime config is in cloud mode, anonymous API 401. No paid inference was run.

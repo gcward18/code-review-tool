@@ -69,3 +69,9 @@ Post-update checks: the final CDK diff reports zero differences (`.build/direct-
 - Deployed `4b09863` (Lambda code only) from a clean snapshot and published its frontend (`index-DgLEu6D2.js`). `cdk diff` showed only new API and worker code and versions and their `live` aliases; no IAM changes (progress events use the worker's existing table writes). Previous versions and site assets are retained.
 - The review page shows each agent's steps live while the team works (metadata only: agents, paths, counts), stored as `PROGRESS#` items under each review.
 - Live checks: the site serves the new build, runtime config is in cloud mode, anonymous API 401. No paid inference was run.
+
+## 2026-11-05: single-commit reviews
+
+- Deployed `314e14b` (Lambda code only) from a clean snapshot and published its frontend (`index-CC-sxmcd.js`). `cdk diff` showed only new API and worker code and versions and their `live` aliases; no IAM changes. Previous versions and site assets are retained.
+- Repository pages offer **Single commit** (one commit against its parent) beside **Single range**; the History batch tab was removed from the UI (the batch API and worker jobs remain).
+- Live checks: the site serves the new build, runtime config is in cloud mode, anonymous API 401. No paid inference was run.

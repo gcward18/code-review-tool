@@ -320,15 +320,23 @@ class App:
         """Create the review and plan it in the background; returns its id at once."""
         root = self._repo(body.get("repo", ""))
         source = self._source(body.get("repo", ""))
-        start, end = body.get("from", ""), body.get("to", "")
-        if end not in {o["value"] for o in self.older(str(root), start)["to"]}:
-            raise ApiError(400, "Pick To from the older commits.")
+        if "commit" in body:
+            # One commit against its first parent, chosen from the same list as From.
+            commit = body.get("commit", "")
+            if commit not in {o["value"] for o in self.repo(body.get("repo", ""))["from"]}:
+                raise ApiError(400, "Pick the commit from the list.")
+            spec = commit
+        else:
+            start, end = body.get("from", ""), body.get("to", "")
+            if end not in {o["value"] for o in self.older(str(root), start)["to"]}:
+                raise ApiError(400, "Pick To from the older commits.")
+            spec = f"{end}..{start}"
         try:
             self.model_factory()
         except RuntimeError as error:
             raise ApiError(400, str(error)) from None
         try:
-            review_id = start_review(self.store, root, f"{end}..{start}", model_name=self.settings.model,
+            review_id = start_review(self.store, root, spec, model_name=self.settings.model,
                                      source=source)
         except (ReviewError, git.GitError) as error:
             raise ApiError(400, str(error)) from None

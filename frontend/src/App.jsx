@@ -6,7 +6,6 @@ import Agents from "./Agents.jsx";
 import Help from "./Help.jsx";
 import Tour, { tourDone } from "./Tour.jsx";
 import Knowledge from "./Knowledge.jsx";
-import BatchPanel from "./Batch.jsx";
 import ChangedFiles from "./Diff.jsx";
 import { coverage, toggleAll, toggleOne } from "./selection.js";
 import Markdown, { MarkdownInline } from "./Markdown.jsx";
@@ -237,14 +236,13 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
   const [repo, setRepo] = useState(null);
   const [project, setProject] = useState(null);
   const [tab, setTab] = useState("single");
-  const [version, setVersion] = useState(0);  // bumps when a batch finishes a review
   useEffect(() => {
     if (repo?.project_id) api.project(repo.project_id).then(setProject);
-  }, [repo?.project_id, version]);
-  const refreshRepo = () => api.repo(repoPath).then((data) => setRepo((r) => ({ ...data, _from: r?._from })));
+  }, [repo?.project_id]);
   const [from, setFrom] = useState("");
   const [older, setOlder] = useState(null);
   const [to, setTo] = useState("");
+  const [commit, setCommit] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -259,6 +257,7 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
       .then((data) => {
         setRepo(data);
         setFrom(data.default_from);
+        setCommit(data.default_from);
       })
       .catch((e) => setError(e.message));
   }, [repoPath]);
@@ -280,7 +279,8 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
     setBusy(true);
     setError("");
     try {
-      onStarted((await api.submit(repoPath, from, to)).id);
+      const review = tab === "commit" ? api.submitCommit(repoPath, commit) : api.submit(repoPath, from, to);
+      onStarted((await review).id);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -290,7 +290,29 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
 
   if (error && !repo) return <div className="card error">{error}</div>;
   if (!repo) return <div className="card muted">Loading repository…</div>;
-  const picker = (
+  const single = (
+    <>
+      {!repo.github && <code className="muted small path">{repo.path}</code>}
+      <div className="range">
+        <label>
+          Commit
+          <select value={commit} onChange={(e) => setCommit(e.target.value)}>
+            <option value="">Choose…</option>
+            <Options items={repo.from} />
+          </select>
+        </label>
+        <button onClick={start} disabled={!commit || busy}>
+          {busy ? "Planning…" : "Plan review"}
+        </button>
+      </div>
+      <p className="muted small">
+        Reviews just this commit against its parent. The coordinator plans first (paths only); you approve before any
+        code is sent.
+      </p>
+      {error && <p className="error">{error}</p>}
+    </>
+  );
+  const picker = tab === "commit" ? single : (
     <>
       {!repo.github && <code className="muted small path">{repo.path}</code>}
       <div className="range">
@@ -311,27 +333,20 @@ function RangePicker({ repoPath, onStarted, onOpen, showAgents }) {
             {older && older.length > 0 && <Options items={older} />}
           </select>
         </label>
-        {tab === "single" && (
-          <button onClick={start} disabled={!from || !to || busy}>
-            {busy ? "Planning…" : "Plan review"}
-          </button>
-        )}
+        <button onClick={start} disabled={!from || !to || busy}>
+          {busy ? "Planning…" : "Plan review"}
+        </button>
       </div>
-      {tab === "single" ? (
-        <p className="muted small">
-          Reviews every commit after <b>To</b> up to and including <b>From</b> as one change. The coordinator plans
-          first (paths only); you approve before any code is sent.
-        </p>
-      ) : (
-        <BatchPanel repoPath={repoPath} from={from} to={to}
-          onProgress={() => (setVersion((v) => v + 1), repo.project_id ? null : refreshRepo())} />
-      )}
+      <p className="muted small">
+        Reviews every commit after <b>To</b> up to and including <b>From</b> as one change. The coordinator plans
+        first (paths only); you approve before any code is sent.
+      </p>
       {error && <p className="error">{error}</p>}
     </>
   );
   const tabs = (
     <div className="tabs inline-tabs" role="tablist">
-      {[["single", "Single range"], ["batch", "History batch"]].map(([key, label]) => (
+      {[["commit", "Single commit"], ["single", "Single range"]].map(([key, label]) => (
         <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? "tab active" : "tab"}
           onClick={() => setTab(key)}>{label}</button>
       ))}

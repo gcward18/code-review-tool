@@ -120,6 +120,20 @@ class WebTests(unittest.TestCase):
         root = git(self.repo, "rev-list", "--max-parents=0", "HEAD")
         self.assertEqual(self.get("/api/older", path=str(self.repo), **{"from": root})["to"], [])
 
+    def test_a_single_commit_is_reviewed_against_its_parent(self):
+        head = git(self.repo, "rev-parse", "HEAD")
+        parent = git(self.repo, "rev-parse", "HEAD~1")
+        with patch("autosde.review.scanner", return_value=clean_scan):
+            review_id = self.post("/api/reviews", {"repo": str(self.repo), "commit": head})["id"]
+            plan = self.wait(review_id, "awaiting_approval")
+        self.assertEqual(plan["range_spec"], head)
+        self.assertEqual((plan["base_sha"], plan["head_sha"]), (parent, head))
+        self.assertEqual(plan["proposed"], ["calculator.py"])
+        for commit in ("not-listed", "--output=x"):
+            with self.assertRaises(urllib.error.HTTPError) as refused:
+                self.post("/api/reviews", {"repo": str(self.repo), "commit": commit})
+            self.assertEqual(refused.exception.code, 400)
+
     def test_submit_plan_approve_review_and_sarif(self):
         base = git(self.repo, "rev-parse", "HEAD~1")
         with patch("autosde.review.scanner", return_value=clean_scan):

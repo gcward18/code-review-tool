@@ -76,6 +76,8 @@ export const api = {
   review: (id) => call(`/api/reviews/${id}`),
   submit: (repo, from, to) =>
     call("/api/reviews", { method: "POST", body: JSON.stringify({ repo, from, to }) }),
+  submitCommit: (repo, commit) =>
+    call("/api/reviews", { method: "POST", body: JSON.stringify({ repo, commit }) }),
   estimate: (id, files) =>
     call(`/api/reviews/${id}/estimate`, { method: "POST", body: JSON.stringify({ files }) }),
   approve: (id, files) =>

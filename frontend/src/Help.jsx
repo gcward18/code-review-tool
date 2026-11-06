@@ -35,8 +35,8 @@ const FAQ = [
         "Lockfiles, build output, IDE settings, minified bundles and similar files rarely contain defects but cost tokens, so they're flagged. Tick them if you want them reviewed anyway."],
       ["How do I read a finding's fix?",
         "Fixes are diffs: lines starting with `-` are removed and `+` are added. **Changed files** below the findings shows each file's full diff with five lines of context; expand the folds for more."],
-      ["Can I review many commits at once?",
-        "Yes: the **History batch** tab reviews every commit, merge commits only, every Nth commit or the latest N, with one approval and a cost cap."],
+      ["Can I review just one commit?",
+        "Yes: the **Single commit** tab reviews one commit against its parent. **Single range** reviews every commit after **To** up to **From** as one change."],
     ],
   },
   {

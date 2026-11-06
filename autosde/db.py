@@ -90,6 +90,14 @@ CREATE TABLE IF NOT EXISTS home_chat (     -- the Home page chat about all proje
     output_tokens INTEGER DEFAULT 0,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS progress (     -- what a review's agents are doing, metadata only
+    id INTEGER PRIMARY KEY,
+    review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    at REAL NOT NULL,
+    agent TEXT NOT NULL,
+    text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS progress_review ON progress(review_id, id);
 CREATE INDEX IF NOT EXISTS chat_project ON chat_messages(project_id, id);
 CREATE INDEX IF NOT EXISTS files_review ON review_files(review_id);
 CREATE INDEX IF NOT EXISTS reviews_project ON reviews(project_id, started_at);
@@ -196,6 +204,11 @@ class Store:
 
     def mark_running(self, review_id):
         self.db.execute("UPDATE reviews SET status = 'running' WHERE id = ?", (review_id,))
+
+    def add_progress(self, review_id, agent, text):
+        """One line of what the team is doing (no code or prompts), shown while it works."""
+        self.db.execute("INSERT INTO progress(review_id, at, agent, text) VALUES (?, ?, ?, ?)",
+                        (review_id, time.time(), str(agent)[:40], str(text)[:300]))
 
     def cancel_review(self, review_id, result=None, status="cancelled"):
         self.db.execute(
@@ -327,6 +340,9 @@ class Store:
             "SELECT path, agent, flag, skipped, included FROM review_files"
             " WHERE review_id = ? ORDER BY flag IS NOT NULL, path",
             review_id,
+        )
+        review["progress"] = self._all(
+            "SELECT at, agent, text FROM progress WHERE review_id = ? ORDER BY id", review_id
         )
         review["findings"] = self._all(
             "SELECT * FROM findings WHERE review_id = ? ORDER BY kept DESC,"

@@ -27,6 +27,12 @@ class Pending:
         return self.team.estimate(self.result, self.changes.files, selection)
 
 
+def progress_for(store, review_id):
+    """progress(agent, text) that records into the review, or None if the store cannot."""
+    add = getattr(store, "add_progress", None)
+    return (lambda agent, text: add(review_id, agent, text)) if callable(add) else None
+
+
 def context_reader(changes, scan, *, settings, source=None):
     """reader(path, start, end) for specialists: numbered head lines of an unchanged committed
     file, Gitleaks-scanned. Changed, flagged, binary, oversized or secret-bearing files are
@@ -110,7 +116,8 @@ def prepare(repo, range_spec, *, store, model, settings, scan=None, on_start=Non
         model = tracing.traced(model, review_id=review_id, scan=scan,
                                name=f"{changes.name} {range_spec} (review {review_id})")
         team = Team(model, retriever=retriever_for(store, model, scan),
-                    reader=context_reader(changes, scan, settings=settings, source=source))
+                    reader=context_reader(changes, scan, settings=settings, source=source),
+                    progress=progress_for(store, review_id))
         result = team.plan(changes.files)
         store.save_plan(review_id, result, changes.files, input_price=settings.input_price,
                         output_price=settings.output_price)
@@ -256,7 +263,8 @@ def plan_review(review_id, repo, *, store, model, settings, scan=None, source=No
         _scan_files(changes, scan)
         model = tracing.traced(model, review_id=review_id, scan=scan,
                                name=f"{review['project']} {review['range_spec']} (review {review_id})")
-        team = Team(model, retriever=retriever_for(store, model, scan, knowledge))
+        team = Team(model, retriever=retriever_for(store, model, scan, knowledge),
+                    progress=progress_for(store, review_id))
         result = team.plan(changes.files)
         if not result.plan:  # nothing to approve
             store.finish_review(review_id, result, input_price=settings.input_price,
@@ -284,7 +292,8 @@ def approve_review(review_id, repo, *, store, model, settings, selection=None, s
         model = tracing.traced(model, review_id=review_id, scan=scan, root=record.get("trace"),
                                name=f"{review['project']} {review['range_spec']} (review {review_id})")
         team = Team(model, retriever=retriever_for(store, model, scan, knowledge),
-                    reader=context_reader(changes, scan, settings=settings, source=source))
+                    reader=context_reader(changes, scan, settings=settings, source=source),
+                    progress=progress_for(store, review_id))
         # The coordinator's call is already stored; carry its tokens into the totals.
         planned = Call(role="coordinator", agent="coordinator", files=[], stored=True,
                        input_tokens=review["input_tokens"], output_tokens=review["output_tokens"])

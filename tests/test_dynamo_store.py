@@ -14,7 +14,7 @@ from autosde.llm import ScriptedModel
 from autosde.review import approve, cancel, prepare
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
-VOLATILE = {"started_at", "finished_at", "created_at", "last_review", "last_run"}
+VOLATILE = {"started_at", "finished_at", "created_at", "last_review", "last_run", "at"}
 
 
 def normalize(value):

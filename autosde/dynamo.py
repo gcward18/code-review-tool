@@ -227,6 +227,12 @@ class DynamoStore:
     def mark_running(self, review_id):
         self.t.update(f"REVIEW#{review_id}", "META", {"status": "running"})
 
+    def add_progress(self, review_id, agent, text):
+        """One line of what the team is doing (no code or prompts), shown while it works."""
+        at, n = self.clock(), self.t.next_id("progress")
+        self.t.put({"PK": f"REVIEW#{review_id}", "SK": f"PROGRESS#{stamp(at, n)}",
+                    "at": at, "agent": str(agent)[:40], "text": str(text)[:300]})
+
     def _files(self, review_id):
         return self.t.children(f"REVIEW#{review_id}", "FILE#")
 
@@ -338,6 +344,9 @@ class DynamoStore:
         runs = [_clean(c) for c in children if c["SK"].startswith("RUN#")]
         files = [_clean(c) for c in children if c["SK"].startswith("FILE#")]
         found = [_clean(c) for c in children if c["SK"].startswith("FINDING#")]
+        review["progress"] = [{"at": c["at"], "agent": c["agent"], "text": c["text"]}
+                              for c in sorted(children, key=lambda c: c["SK"])
+                              if c["SK"].startswith("PROGRESS#")]
         for f in files:
             for key in ("agent", "flag", "skipped", "included"):
                 f.setdefault(key, None)

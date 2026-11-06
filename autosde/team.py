@@ -43,6 +43,15 @@ MAX_CONTEXT_READS, MAX_CONTEXT_LINES = 10, 200
 # share of the review budget held back so the aggregator can always judge what was found.
 AGGREGATOR_INPUT, AGGREGATOR_OUTPUT = 6000, 1500
 BUDGET_REACHED = "review budget reached; call skipped"
+# Progress events per review: metadata only (agents, paths, counts), never code or prompts.
+MAX_PROGRESS = 200
+
+
+def _names(paths, shown=3):
+    """A short list of paths for progress lines: "a.py, b.py and 2 more"."""
+    paths = list(paths)
+    head = ", ".join(paths[:shown])
+    return head + (f" and {len(paths) - shown} more" if len(paths) > shown else "")
 
 
 @dataclass(frozen=True)
@@ -434,12 +443,15 @@ class ReviewState(TypedDict):
 
 
 class Team:
-    def __init__(self, model, *, workers=4, config=None, retriever=None, reader=None):
+    def __init__(self, model, *, workers=4, config=None, retriever=None, reader=None,
+                 progress=None):
         # retriever(kb_ids, query) -> ranked chunks; None disables knowledge bases.
         # reader(path, start, end) -> numbered, scanned text or raises ContextUnavailable;
         # None means specialists cannot read unchanged files.
         self.model, self.workers, self.retriever, self.reader = model, workers, retriever, reader
         self._reads, self._reads_lock = 0, threading.Lock()
+        # progress(agent, text) reports what the team is doing; it never stops a review.
+        self.progress, self._notes = progress, 0
         # Set by execute(): calls stop once the approved budget would be exceeded.
         self.budget, self._spent, self._held, self._skipped = None, [0, 0], [0, 0], 0
         self._fixed = config  # tests pass one; otherwise agents.json is re-read per review
@@ -531,6 +543,18 @@ class Team:
         with tracing_context(enabled=False):
             return graph.invoke(state, {"max_concurrency": self.workers})
 
+    def _note(self, agent, text):
+        if self.progress is None:
+            return
+        with self._reads_lock:
+            if self._notes >= MAX_PROGRESS:
+                return
+            self._notes += 1
+        try:
+            self.progress(agent, text)
+        except Exception:
+            pass  # progress is best effort
+
     def _reserve(self, call, tokens_in, tokens_out):
         """Hold this call's worst case against the budget, or refuse it. Specialists may not
         use the aggregator's share, so the findings can still be judged."""
@@ -565,6 +589,7 @@ class Team:
         held = ((len(system) + len(text)) // 3 + 200, limit)  # generous: ~3 characters a token
         if not self._reserve(call, *held):
             call.status, call.error = "failed", BUDGET_REACHED
+            self._note(call.agent, "Skipped: the review budget is used up")
             return None
         reply = self.model.complete(
             role=call.agent, system=system, prompt=text, schema=schema, max_output_tokens=limit,
@@ -595,6 +620,7 @@ class Team:
              "rule_flag": result.flagged.get(f.path)}
             for f in files
         ]
+        self._note("coordinator", f"Planning {len(files)} changed file(s)")
         data = self._ask(call, prompt("coordinator.md"), json.dumps({"changed_files": listing}),
                          plan_schema(table), 1500)
         paths = {f.path for f in files}
@@ -628,6 +654,8 @@ class Team:
                 if agent in table and agent not in mine:
                     plan.setdefault(agent, {"files": [], "focus": ""})["files"].append(f.path)
         result.plan = plan
+        self._note("coordinator", f"Planned {len(owners_of(plan))} file(s) for {len(plan)} specialist(s)"
+                   + (" (routed by type)" if data is None else ""))
         return plan
 
     def _reference(self, agent, files):
@@ -702,14 +730,22 @@ class Team:
 
     def _attempts(self, agent, system, body, files, by_path, focus, calls):
         """One call, retried up to the specialist's limit: (findings, requests) or (None, [])."""
-        for _ in range(retries(self.config, agent) + 1):
+        tries = retries(self.config, agent) + 1
+        for attempt in range(1, tries + 1):
             call = Call(role="specialist", agent=agent, files=[f.path for f in files], focus=focus)
             calls.append(call)
+            note = f" (attempt {attempt} of {tries})" if attempt > 1 else ""
+            self._note(agent, f"{focus or 'Reviewing'}: {_names(call.files)}{note}")
             data = self._ask(call, system, body, FINDINGS_SCHEMA, 4000)
             findings = self._findings(agent, data, by_path, call) if data is not None else None
             if findings is not None:
                 requests = data.get("requested_context") if isinstance(data, dict) else None
-                return findings, requests if isinstance(requests, list) else []
+                requests = requests if isinstance(requests, list) else []
+                asked = f", asked for {len(requests)} code range(s)" if requests else ""
+                self._note(agent, f"Done: {len(findings)} finding(s){asked}")
+                return findings, requests
+            if call.error != BUDGET_REACHED:
+                self._note(agent, f"Failed: {call.error or 'reply did not match the findings contract'}")
             if call.error == BUDGET_REACHED:
                 break  # retrying cannot fit either
             if call.status == "ok":
@@ -750,6 +786,7 @@ class Team:
                 parts.append(f"{label} not available: {reason}")
                 continue
             parts.append(f"{label}\n{text}")
+            self._note(agent, f"Read {path} lines {start}-{end}")
             with self._reads_lock:
                 result.limitations.append(f"Context: {agent} read {path} lines {start}-{end}.")
         return "\n\n".join(parts)
@@ -812,6 +849,7 @@ class Team:
                                         "new_ids": edit["after"]} for agent, edit in edits.items()}
         if failed:
             payload["failed_specialists"] = failed
+        self._note("aggregator", f"Judging {len(candidates)} finding(s), round {round_number}")
         system, text = prompt("aggregator.md"), json.dumps(payload)
         data = self._ask(call, system, text, VERDICT_SCHEMA, 1500)
         requests = data.get("requested_context") if isinstance(data, dict) else None
@@ -819,6 +857,7 @@ class Team:
             # One read per round: the aggregator sees the code it asked for, then judges.
             context = self._context("aggregator", requests, by_path, result, changed=True)
             if context:
+                self._note("aggregator", "Reading requested code before judging")
                 again = Call(role="aggregator", agent="aggregator", files=call.files,
                              focus="Judging with requested code")
                 result.calls.append(again)
@@ -850,6 +889,9 @@ class Team:
         for finding in result.kept:
             if finding.id in rejected:
                 finding.kept, finding.rejection = False, rejected[finding.id]
+        self._note("aggregator", f"Kept {len(result.kept)}, rejected {len(rejected)}"
+                   + (f", refused edits by {_names(refused)}" if refused else "")
+                   + "".join(f"; asking {agent} to {action}" for action, agent, _, _ in follow_ups))
         return follow_ups
 
     def plan(self, files):

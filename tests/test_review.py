@@ -13,7 +13,7 @@ from autosde import git as capture_git
 from autosde.db import Store
 from autosde.llm import ScriptedModel
 from autosde.review import ReviewError, context_reader, run_review
-from autosde.team import (frameworks, owners_of, AGGREGATOR_INPUT, AGGREGATOR_OUTPUT, BUDGET_REACHED, MAX_CONTEXT_LINES, Budget, MAX_CONTEXT_READS, MAX_ROUNDS, ContextUnavailable, Team,
+from autosde.team import (MAX_PROGRESS, frameworks, owners_of, AGGREGATOR_INPUT, AGGREGATOR_OUTPUT, BUDGET_REACHED, MAX_CONTEXT_LINES, Budget, MAX_CONTEXT_READS, MAX_ROUNDS, ContextUnavailable, Team,
                           TeamResult, changed_lines, numbered)
 from helpers import FINDING, PLAN, clean_scan, findings, git, repository, settings, verdict
 
@@ -326,6 +326,41 @@ class TeamTests(unittest.TestCase):
         stored = store.review(review_id)["files"]
         self.assertEqual([f["agent"] for f in stored], ["typescript, angular"])
 
+    def test_progress_reports_each_step_without_code(self):
+        events = []
+        ask = verdict(follow_ups=[("python", ["calculator.py"], "Check again?")])
+        model = ScriptedModel({"coordinator": [PLAN], "python": ["not json", findings(FINDING), findings(FINDING)],
+                               "aggregator": [ask, verdict()]})
+        Team(model, progress=lambda agent, text: events.append((agent, text))).run(self.files())
+        self.assertEqual(events, [
+            ("coordinator", "Planning 1 changed file(s)"),
+            ("coordinator", "Planned 1 file(s) for 1 specialist(s)"),
+            ("python", "loop totals: calculator.py"),
+            ("python", "Failed: reply was not JSON"),
+            ("python", "loop totals: calculator.py (attempt 2 of 2)"),
+            ("python", "Done: 1 finding(s)"),
+            ("aggregator", "Judging 1 finding(s), round 1"),
+            ("aggregator", "Kept 1, rejected 0; asking python to question"),
+            ("python", "Follow-up: Check again?: calculator.py"),
+            ("python", "Done: 1 finding(s)"),
+            ("aggregator", "Judging 1 finding(s), round 2"),
+            ("aggregator", "Kept 1, rejected 0"),
+        ])
+        self.assertNotIn('item["price"]', " ".join(text for _, text in events))  # no code
+
+    def test_progress_failures_never_stop_a_review_and_are_capped(self):
+        def broken(agent, text):
+            raise RuntimeError("store down")
+
+        model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)], "aggregator": [verdict()]})
+        result = Team(model, progress=broken).run(self.files())
+        self.assertEqual([f.kept for f in result.findings], [True])
+        events = []
+        team = Team(ScriptedModel({}), progress=lambda a, t: events.append(t))
+        for _ in range(MAX_PROGRESS + 5):
+            team._note("python", "x")
+        self.assertEqual(len(events), MAX_PROGRESS)
+
     def test_fallbacks_and_scope(self):
         stray = dict(FINDING, file="other.py")
         wide = dict(FINDING, start_line=0, end_line=999)
@@ -509,6 +544,14 @@ class ReviewStoreTests(unittest.TestCase):
     def review(self, model, scan=clean_scan, spec="HEAD~1..HEAD"):
         return run_review(self.repo, spec, store=self.store, model=model,
                           settings=self.settings, scan=scan)
+
+    def test_review_records_progress_in_the_store(self):
+        review_id = self.review(ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],
+                                               "aggregator": [verdict()]}))
+        progress = self.store.review(review_id)["progress"]
+        self.assertEqual([p["agent"] for p in progress][:2], ["coordinator", "coordinator"])
+        self.assertEqual(progress[-1]["text"], "Kept 1, rejected 0")
+        self.assertTrue(all(isinstance(p["at"], float) for p in progress))
 
     def test_review_is_stored_and_queryable_by_project_and_agent(self):
         model = ScriptedModel({"coordinator": [PLAN], "python": [findings(FINDING)],

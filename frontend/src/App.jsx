@@ -497,6 +497,7 @@ function Review({ id, onProject, onContext, showAgents }) {
           <p className="muted">{review.status === "planning" ? "Planning…" : "The team is reviewing…"}</p>
         )}
       </div>
+      <Activity events={review.progress || []} live={["planning", "running"].includes(review.status)} />
       {review.status === "awaiting_approval" && <Plan review={review} onDecided={load} showAgents={showAgents} />}
       {kept.length > 0 && <h3>Findings ({kept.length})</h3>}
       {kept.map((f) => (
@@ -558,6 +559,33 @@ function Review({ id, onProject, onContext, showAgents }) {
 }
 
 // --- lists --------------------------------------------------------------------
+
+// What each agent is doing, as the worker reports it; open while the review runs.
+function Activity({ events, live }) {
+  if (events.length === 0) return null;
+  const start = events[0].at;
+  const list = (
+    <ol className="activity">
+      {events.map((e, i) => (
+        <li key={i} className={live && i === events.length - 1 ? "current" : ""}>
+          <span className="muted small">+{Math.max(0, Math.round(e.at - start))}s</span>{" "}
+          <b>{e.agent}</b> {e.text}
+        </li>
+      ))}
+    </ol>
+  );
+  return live ? (
+    <div className="card" aria-live="polite">
+      <h3>Activity</h3>
+      {list}
+    </div>
+  ) : (
+    <details className="card">
+      <summary>Activity ({events.length})</summary>
+      {list}
+    </details>
+  );
+}
 
 function ReviewTable({ reviews, onOpen, showAgents }) {
   if (!reviews.length) return <p className="muted">No reviews yet.</p>;

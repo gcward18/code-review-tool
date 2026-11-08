@@ -1,9 +1,10 @@
-// Records the three Help page videos with Playwright against the demo server
+// Records the Help page videos (and the README's knowledge video) with Playwright against the demo server
 // (scripts/demo_server.py: sample repository, scripted model, nothing of yours is shown).
 //
 //   npm run build && node scripts/record-docs.mjs [--gitleaks /path/to/gitleaks]
 //
-// Writes src/docs/{review,agents,settings}.webm and .jpg previews; rebuild afterwards to publish them.
+// Pass --only name[,name] to record some of them.
+// Writes src/docs/{review,agents,settings,knowledge}.webm and .jpg previews; rebuild afterwards to publish them.
 import { spawn } from "node:child_process";
 import { mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -126,12 +127,52 @@ async function settingsPage(page) {
   await page.getByText("Show agent details").click();  // leave it as it was
 }
 
+const DOC = `# Error handling
+
+Never swallow exceptions. Catch the narrowest exception type and log the error class, not the message.
+
+## Retries
+
+Retry network calls at most once, and only when the operation is idempotent.
+
+## Totals
+
+Accumulate totals with +=; never reassign the running total inside a loop.
+`;
+
+async function knowledgePage(page) {
+  await page.getByRole("link", { name: "Knowledge" }).click();
+  await pause(page, 1200);
+  await page.getByRole("button", { name: "+ New knowledge base" }).click();
+  await page.getByPlaceholder("team-conventions").pressSequentially("team-conventions", { delay: 35 });
+  await page.getByPlaceholder("Coding standards and review rules").fill("Coding standards and review rules");
+  await page.getByRole("button", { name: "Create knowledge base" }).click();
+  await pause(page, 1200);
+  await page.getByRole("button", { name: "✎ Paste text" }).click();
+  await page.getByPlaceholder("error-handling-guidelines.md").fill("error-handling.md");
+  await page.getByPlaceholder(/# Error handling/).fill(DOC);
+  await pause(page);
+  await page.getByRole("button", { name: "Add document" }).click();
+  await page.getByText("ready", { exact: false }).first().waitFor({ timeout: 30_000 });
+  await pause(page, 1500);
+  await page.getByRole("button", { name: /error-handling\.md/ }).click();
+  await pause(page, 2000);  // the document's chunks
+  await page.getByRole("tab", { name: "Retrieval" }).click();
+  await page.getByPlaceholder("Ask what an agent would look up…").pressSequentially("how should loops accumulate totals?", { delay: 35 });
+  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByText("retrieved").waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Expand all" }).click();
+  await pause(page, 2500);  // ranked passages, fused from vector and BM25 search
+}
+
+const only = process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1].split(",") : null;
+const scenes = { review, agents: agentsPage, settings: settingsPage, knowledge: knowledgePage };
 const server = await startDemo();
 const browser = await chromium.launch();
 try {
-  await record(browser, "review", review);
-  await record(browser, "agents", agentsPage);
-  await record(browser, "settings", settingsPage);
+  for (const [name, script] of Object.entries(scenes)) {
+    if (!only || only.includes(name)) await record(browser, name, script);
+  }
 } finally {
   await browser.close();
   server.kill("SIGINT");
